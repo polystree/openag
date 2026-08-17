@@ -100,6 +100,7 @@
     "package": "bun run compile:prod && vsce package --no-dependencies --no-rewrite-relative-links"
   },
   "devDependencies": {
+    "@types/bun": "^1.3.14",
     "@types/node": "^26.2.0",
     "@types/vscode": "1.85.0",
     "@vscode/vsce": "^3.9.2",

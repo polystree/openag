@@ -13,4 +13,4 @@ node_modules/**
 bun.lock*
 package-lock.json
 resources/icon.svg
-
+test/**

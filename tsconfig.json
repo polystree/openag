@@ -4,7 +4,7 @@
     "moduleResolution": "NodeNext",
     "target": "ES2022",
     "lib": ["ES2022", "DOM"],
-    "types": ["node"],
+    "types": ["node", "bun"],
     "sourceMap": true,
     "strict": true,
     "rootDir": "src",
