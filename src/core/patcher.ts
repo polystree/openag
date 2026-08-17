@@ -107,31 +107,31 @@ export class AutoRunPatcher {
         const fullPath = path.join(appRoot, rel);
         if (!fs.existsSync(fullPath)) continue;
 
-        let content = fs.readFileSync(fullPath, "utf8");
-        if (content.includes(PATCH_TAG)) continue;
-
-        if (!fs.existsSync(`${fullPath}.openag-backup`)) {
-          fs.copyFileSync(fullPath, `${fullPath}.openag-backup`);
+        const backupPath = `${fullPath}.openag-backup`;
+        let content = fs.existsSync(backupPath) ? fs.readFileSync(backupPath, "utf8") : fs.readFileSync(fullPath, "utf8");
+        if (!fs.existsSync(backupPath)) {
+          fs.copyFileSync(fullPath, backupPath);
         }
 
-        // Fast window-based anchor matching (0.1ms execution on 30MB bundles)
         const anchor = '{case:"runCommand",value:';
-        let idx = 0;
         let patched = false;
-        while ((idx = content.indexOf(anchor, idx)) !== -1) {
+        for (let idx = content.indexOf(anchor); idx !== -1; idx = content.indexOf(anchor, idx + anchor.length)) {
           const winStart = Math.max(0, idx - 150);
           const winEnd = Math.min(content.length, idx + 50);
           const winStr = content.slice(winStart, winEnd);
           const match = winStr.match(/([a-zA-Z0-9_$]+)\s*=\s*([a-zA-Z0-9_$]+)\s*\(\s*([a-zA-Z0-9_$]+)\s*=>\s*\{/);
           if (match) {
             const cbVar = match[1];
-            const patchCode = `${PATCH_TAG};((typeof ${effectId}==="function"?${effectId}:null)||(typeof React!=="undefined"?React.useEffect:null))?.(()=>{try{let _h=(typeof ${hookId}==="function"?${hookId}:null);let _st=_h?.()?.stepHandler;if((_st?.terminalAutoExecutionPolicy===3||_st?.terminalAutoExecutionPolicy==="EAGER")&&!_st?.secureModeEnabled)${cbVar}(!0)}catch{}},[${cbVar}]);`;
-            const insertPos = winStart + match.index!;
-            content = content.slice(0, insertPos) + patchCode + content.slice(insertPos);
-            patched = true;
-            break;
+            const afterAnchor = content.slice(idx, idx + 300);
+            const cbEndMatch = afterAnchor.match(/\},\s*\[[^\]]*\]\s*\)\s*;/);
+            if (cbEndMatch && cbEndMatch.index !== undefined) {
+              const cbEndPos = idx + cbEndMatch.index + cbEndMatch[0].length;
+              const patchCode = `${PATCH_TAG};((typeof ${effectId}==="function"?${effectId}:null)||(typeof React!=="undefined"?React.useEffect:null))?.(()=>{try{let _h=(typeof ${hookId}==="function"?${hookId}:null);let _st=_h?.()?.stepHandler;if((_st?.terminalAutoExecutionPolicy===3||_st?.terminalAutoExecutionPolicy==="EAGER")&&!_st?.secureModeEnabled)${cbVar}(!0)}catch{}},[${cbVar}]);`;
+              content = content.slice(0, cbEndPos) + patchCode + content.slice(cbEndPos);
+              patched = true;
+              break;
+            }
           }
-          idx += anchor.length;
         }
 
         if (patched) {

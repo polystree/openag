@@ -6,7 +6,7 @@
 
 ### Automatic multi-account quota pool and switcher for Google Antigravity
 
-[![Open VSX](https://img.shields.io/badge/Open_VSX-v1.1.0-fa6400?style=flat-square&logo=eclipseide&logoColor=white)](https://open-vsx.org/extension/polystree/openag)
+[![Open VSX](https://img.shields.io/badge/Open_VSX-v1.1.1-fa6400?style=flat-square&logo=eclipseide&logoColor=white)](https://open-vsx.org/extension/polystree/openag)
 [![License](https://img.shields.io/badge/License-MIT-00b4d8?style=flat-square)](LICENSE)
 [![Sponsor](https://img.shields.io/badge/Sponsor-Support_this_project-ff69b4?style=flat-square&logo=github-sponsors&logoColor=white)](https://github.com/sponsors/polystree)
 

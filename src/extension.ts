@@ -217,11 +217,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
     }),
   );
 
-  const patchStatus = AutoRunPatcher.getStatus();
-  if (patchStatus.supported && !patchStatus.isPatched) {
-    const res = AutoRunPatcher.apply();
-    if (res.success) log("[AutoRun Fix] Auto-applied terminal execution fix on startup.");
-  }
 
   log("OpenAG activated successfully.");
   return { tokenManager, quotaMonitor };
