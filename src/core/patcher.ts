@@ -114,31 +114,24 @@ export class AutoRunPatcher {
           fs.copyFileSync(fullPath, `${fullPath}.openag-backup`);
         }
 
-        // Structural injection: match the runCommand userInteraction callback in QNs / Xca
-        const pattern = /([a-zA-Z0-9_$]+)\s*=\s*([a-zA-Z0-9_$]+)\s*\(\s*([a-zA-Z0-9_$]+)\s*=>\s*\{\s*([a-zA-Z0-9_$]+)\?\.\(\s*([a-zA-Z0-9_$,\s]+)\s*,\s*\{\s*case\s*:\s*"runCommand"\s*,\s*value\s*:\s*([a-zA-Z0-9_$]+)\s*\(\s*([a-zA-Z0-9_$]+)\s*,\s*\{\s*confirm\s*:\s*\3/g;
+        // Fast window-based anchor matching (0.1ms execution on 30MB bundles)
+        const anchor = '{case:"runCommand",value:';
+        let idx = 0;
         let patched = false;
-        content = content.replace(pattern, (match, cbVar: string) => {
-          patched = true;
-          const patchCode = `${PATCH_TAG};((typeof ${effectId}==="function"?${effectId}:null)||(typeof React!=="undefined"?React.useEffect:null))?.(()=>{try{let _h=(typeof ${hookId}==="function"?${hookId}:null);let _st=_h?.()?.stepHandler;if((_st?.terminalAutoExecutionPolicy===3||_st?.terminalAutoExecutionPolicy==="EAGER")&&!_st?.secureModeEnabled)${cbVar}(!0)}catch{}},[${cbVar}]);`;
-          return `${patchCode}${match}`;
-        });
-
-        if (!patched) {
-          // Fallback injection using case:"runCommand" anchor
-          const anchor = 'case:"runCommand"';
-          const idx = content.indexOf(anchor);
-          if (idx !== -1) {
-            const windowStart = Math.max(0, idx - 300);
-            const windowEnd = Math.min(content.length, idx + 300);
-            const windowStr = content.slice(windowStart, windowEnd);
-            const subMatch = windowStr.match(/([a-zA-Z0-9_$]+)\s*=\s*([a-zA-Z0-9_$]+)\s*\(\s*([a-zA-Z0-9_$]+)\s*=>\s*\{[^{}]*case\s*:\s*"runCommand"/);
-            if (subMatch) {
-              const cbVar = subMatch[1];
-              const patchCode = `${PATCH_TAG};((typeof ${effectId}==="function"?${effectId}:null)||(typeof React!=="undefined"?React.useEffect:null))?.(()=>{try{let _h=(typeof ${hookId}==="function"?${hookId}:null);let _st=_h?.()?.stepHandler;if((_st?.terminalAutoExecutionPolicy===3||_st?.terminalAutoExecutionPolicy==="EAGER")&&!_st?.secureModeEnabled)${cbVar}(!0)}catch{}},[${cbVar}]);`;
-              content = `${content.slice(0, windowStart + subMatch.index!)}${patchCode}${content.slice(windowStart + subMatch.index!)}`;
-              patched = true;
-            }
+        while ((idx = content.indexOf(anchor, idx)) !== -1) {
+          const winStart = Math.max(0, idx - 150);
+          const winEnd = Math.min(content.length, idx + 50);
+          const winStr = content.slice(winStart, winEnd);
+          const match = winStr.match(/([a-zA-Z0-9_$]+)\s*=\s*([a-zA-Z0-9_$]+)\s*\(\s*([a-zA-Z0-9_$]+)\s*=>\s*\{/);
+          if (match) {
+            const cbVar = match[1];
+            const patchCode = `${PATCH_TAG};((typeof ${effectId}==="function"?${effectId}:null)||(typeof React!=="undefined"?React.useEffect:null))?.(()=>{try{let _h=(typeof ${hookId}==="function"?${hookId}:null);let _st=_h?.()?.stepHandler;if((_st?.terminalAutoExecutionPolicy===3||_st?.terminalAutoExecutionPolicy==="EAGER")&&!_st?.secureModeEnabled)${cbVar}(!0)}catch{}},[${cbVar}]);`;
+            const insertPos = winStart + match.index!;
+            content = content.slice(0, insertPos) + patchCode + content.slice(insertPos);
+            patched = true;
+            break;
           }
+          idx += anchor.length;
         }
 
         if (patched) {
