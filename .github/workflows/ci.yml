@@ -30,6 +30,9 @@ jobs:
       - name: Lint
         run: bun run lint
 
+      - name: Run tests
+        run: bun run test
+
       - name: Compile production bundle
         run: bun run compile:prod
 

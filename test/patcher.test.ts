@@ -66,3 +66,37 @@ describe("AutoRunPatcher bundle patching", () => {
     expect(hash).not.toContain("=");
   });
 });
+
+describe("TokenManager Quota Selection logic", () => {
+  function getEffectiveQuota(families: Array<{ percent: number; limit5h?: { percent: number; resetTime?: string }; resetTime?: string }>): { percent: number; resetTs: number } {
+    if (!families || families.length === 0) return { percent: -1, resetTs: Infinity };
+    let minPct = 100, minResetTs = Infinity;
+    for (const f of families) {
+      const pct = f.limit5h?.percent ?? f.percent ?? 100;
+      minPct = Math.min(minPct, pct);
+      const resetTime = f.limit5h?.resetTime ?? f.resetTime;
+      if (resetTime) {
+        const ts = Date.parse(resetTime);
+        if (!Number.isNaN(ts) && ts < minResetTs) minResetTs = ts;
+      }
+    }
+    return { percent: minPct, resetTs: minResetTs };
+  }
+
+  test("correctly computes minimum remaining quota across families", () => {
+    const families = [
+      { key: "gemini", label: "Gemini", percent: 80, limit5h: { percent: 80, resetTime: "2026-08-17T22:00:00Z" } },
+      { key: "claude", label: "Claude", percent: 45, limit5h: { percent: 45, resetTime: "2026-08-17T23:00:00Z" } },
+    ];
+    const res = getEffectiveQuota(families);
+    expect(res.percent).toBe(45);
+    expect(res.resetTs).toBe(Date.parse("2026-08-17T22:00:00Z"));
+  });
+
+  test("returns -1 for empty family list", () => {
+    const res = getEffectiveQuota([]);
+    expect(res.percent).toBe(-1);
+    expect(res.resetTs).toBe(Infinity);
+  });
+});
+

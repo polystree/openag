@@ -17,8 +17,8 @@ export class UsageTracker {
   public readonly onContextChange = this.onContextChangeEmitter.event;
 
   constructor() {
-    this.pollTranscript();
-    this.watchTimer = setInterval(() => this.pollTranscript(), 2500);
+    void this.pollTranscript();
+    this.watchTimer = setInterval(() => void this.pollTranscript(), 2500);
   }
 
   public registerModelMetadata(models: Record<string, { maxTokens?: number }>): void {
@@ -48,14 +48,14 @@ export class UsageTracker {
     return cu;
   }
 
-  private detectModelFromTranscript(filePath: string): string {
+  private async detectModelFromTranscript(filePath: string): Promise<string> {
     try {
-      const fd = fs.openSync(filePath, "r");
-      const stat = fs.fstatSync(fd);
+      const handle = await fs.promises.open(filePath, "r");
+      const stat = await handle.stat();
       const bufSize = Math.min(stat.size, 8192);
       const buf = Buffer.alloc(bufSize);
-      fs.readSync(fd, buf, 0, bufSize, 0);
-      fs.closeSync(fd);
+      await handle.read(buf, 0, bufSize, 0);
+      await handle.close();
       const text = buf.toString("utf-8");
       const match = text.match(/`Model Selection` from [^ ]+ to ([^.]+)\./i) || text.match(/"model":\s*"([^"]+)"/i);
       if (match?.[1]) return match[1].trim().toLowerCase().replace(/\s+/g, "-");
@@ -63,28 +63,29 @@ export class UsageTracker {
     return this.activeModel;
   }
 
-  private pollTranscript(): void {
+  private async pollTranscript(): Promise<void> {
     try {
-      if (!fs.existsSync(BRAIN_DIR)) return;
-      const dirs = fs.readdirSync(BRAIN_DIR);
+      const exists = await fs.promises.stat(BRAIN_DIR).then(() => true, () => false);
+      if (!exists) return;
+      const dirs = await fs.promises.readdir(BRAIN_DIR);
       let latestFile = "", latestMtime = 0, latestSize = 0;
 
       for (const d of dirs) {
         const p = path.join(BRAIN_DIR, d, ".system_generated", "logs", "transcript.jsonl");
-        if (fs.existsSync(p)) {
-          const stat = fs.statSync(p);
+        try {
+          const stat = await fs.promises.stat(p);
           if (stat.mtimeMs > latestMtime) {
             latestMtime = stat.mtimeMs;
             latestFile = p;
             latestSize = stat.size;
           }
-        }
+        } catch { /* ignore */ }
       }
 
       if (latestFile && (latestFile !== this.lastTranscriptPath || latestSize !== this.lastTranscriptSize)) {
         this.lastTranscriptPath = latestFile;
         this.lastTranscriptSize = latestSize;
-        const model = this.detectModelFromTranscript(latestFile);
+        const model = await this.detectModelFromTranscript(latestFile);
         this.updateContextUsage(model, Math.round(latestSize / 3.8));
       }
     } catch { /* ignore */ }

@@ -54,7 +54,9 @@ export class QuotaMonitor {
       const accessToken = await this.tokenManager.getValidAccessToken(account);
       await this.discoverModels(accessToken);
       const tier = await this.detectTier(account, accessToken);
-      account.tier = tier;
+      if (account.tier !== tier) {
+        await this.tokenManager.updateAccountTier(account.email, tier);
+      }
 
       const res = await fetch(`${ENDPOINT}/v1internal:retrieveUserQuotaSummary`, {
         method: "POST",

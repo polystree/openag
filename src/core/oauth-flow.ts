@@ -50,6 +50,7 @@ export const OAuthFlow = {
     return new Promise((resolve, reject) => {
       let server: http.Server | null = null;
       let timeout: NodeJS.Timeout | null = null;
+      const expectedState = crypto.randomBytes(16).toString("hex");
 
       const cleanup = () => {
         if (timeout) clearTimeout(timeout);
@@ -64,11 +65,13 @@ export const OAuthFlow = {
             return;
           }
           const code = reqUrl.searchParams.get("code");
+          const state = reqUrl.searchParams.get("state");
           const error = reqUrl.searchParams.get("error");
-          if (error || !code) {
-            res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" }).end(`<h3>Login Failed</h3><p>${error || "Missing code"}</p>`);
+          if (error || !code || state !== expectedState) {
+            const errDetail = error || (state !== expectedState ? "Invalid OAuth state" : "Missing code");
+            res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" }).end(`<h3>Login Failed</h3><p>${errDetail}</p>`);
             cleanup();
-            reject(new Error(error ? `OAuth error: ${error}` : "Missing code"));
+            reject(new Error(error ? `OAuth error: ${error}` : errDetail));
             return;
           }
 
@@ -100,7 +103,7 @@ export const OAuthFlow = {
           scope: SCOPES,
           access_type: "offline",
           prompt: "consent",
-          state: crypto.randomBytes(16).toString("hex"),
+          state: expectedState,
         });
 
         const authUrl = `${GOOGLE_AUTH_URL}?${authParams.toString()}`;

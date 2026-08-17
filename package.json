@@ -2,7 +2,7 @@
   "name": "openag",
   "displayName": "OpenAG",
   "description": "Multi-account pool and quota rotation for Google Antigravity.",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "publisher": "polystree",
   "author": "Polystree",
   "license": "MIT",
@@ -97,6 +97,7 @@
     "watch": "node esbuild.js --watch",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint --config .oxlintrc.json",
+    "test": "bun test",
     "package": "bun run compile:prod && vsce package --no-dependencies --no-rewrite-relative-links"
   },
   "devDependencies": {

@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import type { Account, AccountQuota, OAuthTokens, OpenAGConfig } from "../types.js";
+import type { Account, AccountQuota, AccountTier, OAuthTokens, OpenAGConfig } from "../types.js";
 import { USSBridge } from "./uss-bridge.js";
 
 const KEY_ACCOUNTS = "openag.accounts.v1";
@@ -126,6 +126,16 @@ export class TokenManager {
     this.onAccountChangeEmitter.fire();
     this.log(`Account ${email} pool status: ${newStatus}`);
     return target;
+  }
+
+  public async updateAccountTier(email: string, tier: AccountTier): Promise<void> {
+    const target = this.accounts.find((a) => a.email.toLowerCase() === email.toLowerCase());
+    if (target && target.tier !== tier) {
+      target.tier = tier;
+      target.updatedAt = Date.now();
+      await this.persist();
+      this.onAccountChangeEmitter.fire();
+    }
   }
 
   public async selectAccount(email: string): Promise<Account | null> {
