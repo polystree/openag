@@ -1,0 +1,16 @@
+.vscode/**
+.vscode-test/**
+.github/**
+src/**
+dist/**/*.map
+*.map
+*.vsix
+.oxlintrc.json
+tsconfig.json
+esbuild.js
+node_modules/**
+.gitignore
+bun.lock*
+package-lock.json
+resources/icon.svg
+

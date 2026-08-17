@@ -1,0 +1,102 @@
+{
+  "name": "openag",
+  "displayName": "OpenAG",
+  "description": "Multi-account pool and quota rotation for Google Antigravity.",
+  "version": "1.0.1",
+  "publisher": "polystree",
+  "author": "Polystree",
+  "license": "MIT",
+  "icon": "resources/icon.png",
+  "homepage": "https://github.com/polystree/openag",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/polystree/openag.git"
+  },
+  "bugs": {
+    "url": "https://github.com/polystree/openag/issues"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other",
+    "Programming Languages",
+    "Machine Learning"
+  ],
+  "keywords": [
+    "antigravity",
+    "openag",
+    "google",
+    "gemini",
+    "multi-account",
+    "rotation",
+    "quota"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "openag",
+          "title": "OpenAG",
+          "icon": "resources/openag-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "openag": [
+        {
+          "id": "openag.accounts",
+          "name": "Accounts & Quota",
+          "type": "webview",
+          "icon": "resources/openag-icon.svg"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "openag.openPanel",
+        "title": "OpenAG: Open Management Panel"
+      },
+      {
+        "command": "openag.enable",
+        "title": "OpenAG: Enable Extension"
+      },
+      {
+        "command": "openag.disable",
+        "title": "OpenAG: Disable Extension"
+      },
+      {
+        "command": "openag.addAccount",
+        "title": "OpenAG: Add Google Account"
+      },
+      {
+        "command": "openag.refreshQuotas",
+        "title": "OpenAG: Refresh All Quotas"
+      },
+      {
+        "command": "openag.switchAccount",
+        "title": "OpenAG: Switch Active Account"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "node esbuild.js",
+    "compile:prod": "node esbuild.js --production",
+    "watch": "node esbuild.js --watch",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint --config .oxlintrc.json",
+    "package": "bun run compile:prod && vsce package --no-dependencies --no-rewrite-relative-links"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "@types/vscode": "1.85.0",
+    "@vscode/vsce": "^3.9.2",
+    "esbuild": "^0.28.2",
+    "oxlint": "^1.78.0",
+    "typescript": "^7.0.2"
+  }
+}
