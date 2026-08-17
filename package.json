@@ -2,7 +2,7 @@
   "name": "openag",
   "displayName": "OpenAG",
   "description": "Multi-account pool and quota rotation for Google Antigravity.",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "publisher": "polystree",
   "author": "Polystree",
   "license": "MIT",
@@ -80,6 +80,14 @@
       {
         "command": "openag.switchAccount",
         "title": "OpenAG: Switch Active Account"
+      },
+      {
+        "command": "openag.applyAutoRunFix",
+        "title": "OpenAG: Apply Auto-Run Terminal Fix"
+      },
+      {
+        "command": "openag.revertAutoRunFix",
+        "title": "OpenAG: Revert Auto-Run Terminal Fix"
       }
     ]
   },

@@ -6,7 +6,7 @@
 
 ### Automatic multi-account quota pool and switcher for Google Antigravity
 
-[![Open VSX](https://img.shields.io/badge/Open_VSX-v1.0.1-fa6400?style=flat-square&logo=eclipseide&logoColor=white)](https://open-vsx.org/extension/polystree/openag)
+[![Open VSX](https://img.shields.io/badge/Open_VSX-v1.1.0-fa6400?style=flat-square&logo=eclipseide&logoColor=white)](https://open-vsx.org/extension/polystree/openag)
 [![License](https://img.shields.io/badge/License-MIT-00b4d8?style=flat-square)](LICENSE)
 [![Sponsor](https://img.shields.io/badge/Sponsor-Support_this_project-ff69b4?style=flat-square&logo=github-sponsors&logoColor=white)](https://github.com/sponsors/polystree)
 
@@ -21,6 +21,7 @@
 ## What It Does
 
 - **Auto Account Switching**: Automatically routes to the account with the highest available quota.
+- **Auto-Run Terminal Fix**: Fixes Antigravity's "Always Proceed" terminal policy so commands execute automatically without asking to confirm every time.
 - **Status Bar HUD**: See your active account, remaining quota, reset timers, and context usage at a glance.
 - **Easy Account Pool**: Add your Google accounts once and let OpenAG handle the rotation in the background.
 - **Secure by Default**: All tokens are safely stored in your system's secure keychain.
@@ -44,6 +45,8 @@ You can also click the status bar item anytime to see detailed quotas or switch 
 - `OpenAG: Add Google Account`: Add another Google account.
 - `OpenAG: Switch Active Account`: Pick an account manually from the list.
 - `OpenAG: Refresh All Quotas`: Update quota balances immediately.
+- `OpenAG: Apply Auto-Run Terminal Fix`: Patch Antigravity terminal auto-execution.
+- `OpenAG: Revert Auto-Run Terminal Fix`: Restore original Antigravity files.
 - `OpenAG: Enable / Disable Extension`: Turn automatic management on or off.
 
 ---

@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { LogManager } from "./core/log-manager.js";
 import { OAuthFlow } from "./core/oauth-flow.js";
+import { AutoRunPatcher } from "./core/patcher.js";
 import { QuotaMonitor } from "./core/quota-monitor.js";
 import { TokenManager } from "./core/token-manager.js";
 import { UsageTracker } from "./core/usage-tracker.js";
@@ -192,7 +193,35 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
         void quotaMonitor?.pollActiveAccount();
       }
     }),
+    vscode.commands.registerCommand("openag.applyAutoRunFix", async () => {
+      const res = AutoRunPatcher.apply();
+      log(`[AutoRun Fix] ${res.message}`);
+      if (res.success) {
+        const reload = await vscode.window.showInformationMessage(`OpenAG: ${res.message}`, "Reload Window");
+        if (reload === "Reload Window") void vscode.commands.executeCommand("workbench.action.reloadWindow");
+      } else {
+        void vscode.window.showErrorMessage(`OpenAG: ${res.message}`);
+      }
+      webviewProvider?.refresh();
+    }),
+    vscode.commands.registerCommand("openag.revertAutoRunFix", async () => {
+      const res = AutoRunPatcher.revert();
+      log(`[AutoRun Fix] ${res.message}`);
+      if (res.success) {
+        const reload = await vscode.window.showInformationMessage(`OpenAG: ${res.message}`, "Reload Window");
+        if (reload === "Reload Window") void vscode.commands.executeCommand("workbench.action.reloadWindow");
+      } else {
+        void vscode.window.showErrorMessage(`OpenAG: ${res.message}`);
+      }
+      webviewProvider?.refresh();
+    }),
   );
+
+  const patchStatus = AutoRunPatcher.getStatus();
+  if (patchStatus.supported && !patchStatus.isPatched) {
+    const res = AutoRunPatcher.apply();
+    if (res.success) log("[AutoRun Fix] Auto-applied terminal execution fix on startup.");
+  }
 
   log("OpenAG activated successfully.");
   return { tokenManager, quotaMonitor };
