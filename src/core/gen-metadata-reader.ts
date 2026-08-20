@@ -29,7 +29,8 @@ function decodeVarint(buf: Buffer, offset: number): { value: number; offset: num
   let result = 0;
   let shift = 0;
   while (offset < buf.length) {
-    const byte = buf[offset++]!;
+    const byte = buf[offset++];
+    if (byte === undefined) return null;
     result |= (byte & 0x7f) << shift;
     shift += 7;
     if ((byte & 0x80) === 0) return { value: result >>> 0, offset };
@@ -94,33 +95,33 @@ function decodeMessage(buf: Buffer, start: number, end: number): Map<number, Pro
 function getVarint(msg: Map<number, ProtoField[]>, field: number): number {
   const arr = msg.get(field);
   if (!arr || arr.length === 0) return 0;
-  const entry = arr[0]!;
+  const entry = arr[0];
   // SAFETY: discriminated on entry.type === "varint", value is always number
-  return entry.type === "varint" ? (entry.value as number) : 0;
+  return entry && entry.type === "varint" ? (entry.value as number) : 0;
 }
 
 function getString(msg: Map<number, ProtoField[]>, field: number): string {
   const arr = msg.get(field);
   if (!arr || arr.length === 0) return "";
-  const entry = arr[0]!;
+  const entry = arr[0];
   // SAFETY: discriminated on entry.type === "string", value is always string
-  return entry.type === "string" ? (entry.value as string) : "";
+  return entry && entry.type === "string" ? (entry.value as string) : "";
 }
 
 function getFloat64(msg: Map<number, ProtoField[]>, field: number): number {
   const arr = msg.get(field);
   if (!arr || arr.length === 0) return 0;
-  const entry = arr[0]!;
+  const entry = arr[0];
   // SAFETY: discriminated on entry.type === "float64", value is always number
-  return entry.type === "float64" ? (entry.value as number) : 0;
+  return entry && entry.type === "float64" ? (entry.value as number) : 0;
 }
 
 function getSubmsg(msg: Map<number, ProtoField[]>, field: number): Map<number, ProtoField[]> | null {
   const arr = msg.get(field);
   if (!arr || arr.length === 0) return null;
-  const entry = arr[0]!;
+  const entry = arr[0];
   // SAFETY: discriminated on entry.type === "message", value is always Map
-  return entry.type === "message" ? (entry.value as Map<number, ProtoField[]>) : null;
+  return entry && entry.type === "message" ? (entry.value as Map<number, ProtoField[]>) : null;
 }
 
 function parseTurnFromBlob(buf: Buffer): GenTurnMetrics | null {
@@ -210,7 +211,8 @@ export function readGenMetadata(conversationId: string): GenConversationMetrics 
     totalOutput += turn.outputTokens;
   }
 
-  const lastTurn = turns[turns.length - 1]!;
+  const lastTurn = turns[turns.length - 1];
+  if (!lastTurn) return null;
   const totalCached = lastTurn.cachedInputTokens;
 
   return {
@@ -236,10 +238,16 @@ export interface BlockTokens {
   maxGenIdx: number;
 }
 
-export function aggregateBlockTokens(turns: GenTurnMetrics[], startLine: number, endLine: number): BlockTokens {
+export function aggregateBlockTokens(
+  turns: GenTurnMetrics[],
+  startTurnIdx: number,
+  endTurnIdx: number,
+): BlockTokens {
   const result: BlockTokens = { inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, cacheMissTokens: 0, model: "", maxGenIdx: 0 };
+  if (!turns || turns.length === 0 || startTurnIdx <= 0) return result;
+
   for (const turn of turns) {
-    if (turn.idx < startLine || turn.idx > endLine) continue;
+    if (turn.idx < startTurnIdx || turn.idx > endTurnIdx) continue;
     result.inputTokens = turn.cachedInputTokens + turn.newInputTokens;
     result.outputTokens += turn.outputTokens;
     result.cacheHitTokens = turn.cachedInputTokens;

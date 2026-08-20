@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import * as crypto from "node:crypto";
-import type { EffectiveQuota } from "../src/types.js";
 import * as vm from "node:vm";
+import type { EffectiveQuota } from "../src/types.js";
 
 const TAG_AUTORUN = "/*OPENAG:autorun*/";
 

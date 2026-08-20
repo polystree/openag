@@ -125,6 +125,8 @@ function getTodayString(): string {
 export interface RequestBlock {
   startLine: number;
   endLine: number;
+  startTurnIdx: number;
+  endTurnIdx: number;
   timestamp: number;
   promptText: string;
   turnCount: number;
@@ -150,6 +152,7 @@ export function parseTranscriptLines(
   const completedBlocks: RequestBlock[] = [];
   let currentBlock: RequestBlock | null = null;
   let completedEndLine = 0;
+  let modelTurnCount = 0;
 
   if (!initialPrompt && lines.length > 0 && lines[0]) {
     try {
@@ -207,6 +210,8 @@ export function parseTranscriptLines(
         currentBlock = {
           startLine: i,
           endLine: i + 1,
+          startTurnIdx: 0,
+          endTurnIdx: 0,
           timestamp: reqTime,
           promptText: pText || "User Prompt",
           turnCount: 0,
@@ -214,11 +219,14 @@ export function parseTranscriptLines(
           isFinished: false,
         };
       } else if (obj.type === "PLANNER_RESPONSE" || (!obj.type && obj.source === "MODEL")) {
+        modelTurnCount += 1;
         const stepTime = obj.created_at ? Date.parse(obj.created_at) : Date.now();
         if (!currentBlock) {
           currentBlock = {
             startLine: i,
             endLine: i + 1,
+            startTurnIdx: modelTurnCount,
+            endTurnIdx: modelTurnCount,
             timestamp: stepTime,
             promptText: initialPrompt || convTitle || "Initial Request",
             turnCount: 0,
@@ -227,6 +235,10 @@ export function parseTranscriptLines(
           };
         }
 
+        if (currentBlock.startTurnIdx === 0) {
+          currentBlock.startTurnIdx = modelTurnCount;
+        }
+        currentBlock.endTurnIdx = modelTurnCount;
         currentBlock.turnCount += 1;
         currentBlock.detectedModel = detectedModel;
         currentBlock.endLine = i + 1;
@@ -397,6 +409,56 @@ export class StatsManager {
     const cid = convId || "default";
     const title = convTitle || extractAntigravityTitle(cid, promptPreview);
 
+    const cleanPrompt = promptPreview ? promptPreview.slice(0, 80) : "";
+    const existingReq = cleanPrompt
+      ? this.registry.requests.find(
+          (r) =>
+            r.promptPreview === cleanPrompt &&
+            Math.abs(r.timestamp - timestamp) < 60000,
+        )
+      : undefined;
+
+    let deltaIn = inputTokens;
+    let deltaOut = outputTokens;
+    let deltaHit = cacheHitTokens;
+    let deltaMiss = cacheMissTokens;
+    let deltaTurns = turnCount;
+
+    if (existingReq) {
+      if (
+        existingReq.turnCount === turnCount &&
+        existingReq.inputTokens === inputTokens &&
+        existingReq.outputTokens === outputTokens &&
+        existingReq.cacheHitTokens === cacheHitTokens
+      ) {
+        return;
+      }
+      deltaIn = Math.max(0, inputTokens - existingReq.inputTokens);
+      deltaOut = Math.max(0, outputTokens - existingReq.outputTokens);
+      deltaHit = Math.max(0, cacheHitTokens - existingReq.cacheHitTokens);
+      deltaMiss = Math.max(0, cacheMissTokens - (existingReq.inputTokens - existingReq.cacheHitTokens));
+      deltaTurns = Math.max(0, turnCount - existingReq.turnCount);
+
+      existingReq.turnCount = Math.max(existingReq.turnCount, turnCount);
+      existingReq.inputTokens = Math.max(existingReq.inputTokens, inputTokens);
+      existingReq.outputTokens = Math.max(existingReq.outputTokens, outputTokens);
+      existingReq.cacheHitTokens = Math.max(existingReq.cacheHitTokens, cacheHitTokens);
+      existingReq.totalTokens = existingReq.inputTokens + existingReq.outputTokens;
+      if (cleanModel && cleanModel !== "Unknown Model") existingReq.model = cleanModel;
+    } else if (cleanPrompt) {
+      this.registry.requests.push({
+        id: `req_${timestamp}_${crypto.randomUUID().slice(0, 8)}`,
+        timestamp,
+        promptPreview: cleanPrompt,
+        model: cleanModel,
+        turnCount: Math.max(1, turnCount),
+        inputTokens,
+        outputTokens,
+        cacheHitTokens,
+        totalTokens: inputTokens + outputTokens,
+      });
+    }
+
     if (!this.registry.days[date]) {
       this.registry.days[date] = {
         date,
@@ -407,16 +469,18 @@ export class StatsManager {
     }
 
     const day = this.registry.days[date];
-    addToBucket(day, { input: inputTokens, output: outputTokens, cacheHit: cacheHitTokens, cacheMiss: cacheMissTokens });
+    if (deltaIn > 0 || deltaOut > 0) {
+      addToBucket(day, { input: deltaIn, output: deltaOut, cacheHit: deltaHit, cacheMiss: deltaMiss });
+    }
 
     if (!day.models[cleanModel]) day.models[cleanModel] = createEmptyBucket();
     const modelBucket = day.models[cleanModel];
-    if (modelBucket) {
+    if (modelBucket && (deltaIn > 0 || deltaOut > 0)) {
       addToBucket(modelBucket, {
-        input: inputTokens,
-        output: outputTokens,
-        cacheHit: cacheHitTokens,
-        cacheMiss: cacheMissTokens,
+        input: deltaIn,
+        output: deltaOut,
+        cacheHit: deltaHit,
+        cacheMiss: deltaMiss,
       });
     }
 
@@ -435,7 +499,7 @@ export class StatsManager {
 
     const cStat = this.registry.conversations[cid];
     if (cStat) {
-      cStat.turnCount += turnCount;
+      cStat.turnCount += deltaTurns;
       cStat.lastActive = Math.max(cStat.lastActive || 0, timestamp);
       if (cleanModel && cleanModel !== "Unknown Model") cStat.model = cleanModel;
       if (title && (!cStat.title || cStat.title === cid.slice(0, 8))) cStat.title = title;
@@ -443,49 +507,21 @@ export class StatsManager {
       if (cleanModel && cleanModel !== "Unknown Model") {
         if (!cStat.models[cleanModel]) cStat.models[cleanModel] = createEmptyBucket();
         const mBucket = cStat.models[cleanModel];
-        if (mBucket) {
+        if (mBucket && (deltaIn > 0 || deltaOut > 0)) {
           addToBucket(mBucket, {
-            input: inputTokens,
-            output: outputTokens,
-            cacheHit: cacheHitTokens,
-            cacheMiss: cacheMissTokens,
+            input: deltaIn,
+            output: deltaOut,
+            cacheHit: deltaHit,
+            cacheMiss: deltaMiss,
           });
         }
       }
-      addToBucket(cStat, {
-        input: inputTokens,
-        output: outputTokens,
-        cacheHit: cacheHitTokens,
-        cacheMiss: cacheMissTokens,
-      });
-    }
-
-    if (promptPreview) {
-      const cleanPrompt = promptPreview.slice(0, 80);
-      const existingReq = this.registry.requests.find(
-        (r) =>
-          (r.promptPreview === cleanPrompt && Math.abs(r.timestamp - timestamp) < 60000) ||
-          (timestamp > 0 && Math.abs(r.timestamp - timestamp) < 1500),
-      );
-
-      if (existingReq) {
-        existingReq.turnCount += turnCount;
-        existingReq.outputTokens += outputTokens;
-        existingReq.inputTokens += inputTokens;
-        existingReq.cacheHitTokens += cacheHitTokens;
-        existingReq.totalTokens = existingReq.inputTokens + existingReq.outputTokens;
-        if (cleanModel && cleanModel !== "Unknown Model") existingReq.model = cleanModel;
-      } else {
-        this.registry.requests.push({
-          id: `req_${timestamp}_${crypto.randomUUID().slice(0, 8)}`,
-          timestamp,
-          promptPreview: cleanPrompt,
-          model: cleanModel,
-          turnCount: Math.max(1, turnCount),
-          inputTokens,
-          outputTokens,
-          cacheHitTokens,
-          totalTokens: inputTokens + outputTokens,
+      if (deltaIn > 0 || deltaOut > 0) {
+        addToBucket(cStat, {
+          input: deltaIn,
+          output: deltaOut,
+          cacheHit: deltaHit,
+          cacheMiss: deltaMiss,
         });
       }
     }
@@ -763,7 +799,7 @@ export class StatsManager {
             const dateStr = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, "0")}-${String(dateObj.getDate()).padStart(2, "0")}`;
 
             const agg = genMetrics
-              ? aggregateBlockTokens(genMetrics.turns, block.startLine, block.endLine)
+              ? aggregateBlockTokens(genMetrics.turns, block.startTurnIdx, block.endTurnIdx)
               : { inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, cacheMissTokens: 0, model: "", maxGenIdx: 0 };
 
             const model = agg.model

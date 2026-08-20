@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import type { ContextUsage } from "../types.js";
-import { aggregateBlockTokens, readGenMetadata, readGenMetadataSince } from "./gen-metadata-reader.js";
+import { aggregateBlockTokens, readGenMetadata } from "./gen-metadata-reader.js";
 import { BRAIN_DIR, CONV_DIR, loadSqlite } from "./sqlite-utils.js";
 import {
   extractAntigravityTitle,
@@ -252,7 +252,7 @@ export class UsageTracker {
       // Read gen_metadata for exact token counts and context window
       const genMetrics = this.activeConversationId ? readGenMetadata(this.activeConversationId) : null;
 
-      if (genMetrics && genMetrics.latestModel) {
+      if (genMetrics?.latestModel) {
         const formatted = formatDynamicModelName(genMetrics.latestModel);
         if (formatted) this.activeModel = formatted;
       } else {
@@ -273,14 +273,14 @@ export class UsageTracker {
 
       // Record completed request blocks with exact gen_metadata token counts
       if (this.statsManager && this.activeConversationId) {
-        const newTurns = readGenMetadataSince(this.activeConversationId, this.lastProcessedGenIdx);
+        const turns = genMetrics?.turns || [];
 
         for (const block of parsed.completedBlocks) {
           if (block.endLine > this.lastProcessedLineCount && block.turnCount > 0) {
             const dateObj = new Date(block.timestamp);
             const dateStr = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, "0")}-${String(dateObj.getDate()).padStart(2, "0")}`;
 
-            const agg = aggregateBlockTokens(newTurns, block.startLine, block.endLine);
+            const agg = aggregateBlockTokens(turns, block.startTurnIdx, block.endTurnIdx);
             const blockModel = agg.model
               ? (formatDynamicModelName(agg.model) || this.activeModel)
               : this.activeModel;

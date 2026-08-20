@@ -167,4 +167,54 @@ describe("StatsManager Token Usage Engine", () => {
 
     manager.dispose();
   });
+
+  test("parseTranscriptLines maps sequential model turn indices accurately", () => {
+    const lines = [
+      // Request 1: 2 model turns
+      JSON.stringify({ step_index: 0, source: "USER_INPUT", type: "USER_INPUT", content: "<USER_REQUEST>Req 1</USER_REQUEST>" }),
+      JSON.stringify({ step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", content: "Tool call 1", tool_calls: [{ name: "t1" }] }),
+      JSON.stringify({ step_index: 2, source: "MODEL", type: "TOOL_OUTPUT", content: "Out 1" }),
+      JSON.stringify({ step_index: 3, source: "MODEL", type: "PLANNER_RESPONSE", content: "Final 1", tool_calls: [] }),
+      // Request 2: 1 model turn
+      JSON.stringify({ step_index: 4, source: "USER_INPUT", type: "USER_INPUT", content: "<USER_REQUEST>Req 2</USER_REQUEST>" }),
+      JSON.stringify({ step_index: 5, source: "MODEL", type: "PLANNER_RESPONSE", content: "Final 2", tool_calls: [] }),
+    ];
+
+    const parsed = parseTranscriptLines(lines);
+    expect(parsed.completedBlocks.length).toBe(2);
+
+    expect(parsed.completedBlocks[0]?.startTurnIdx).toBe(1);
+    expect(parsed.completedBlocks[0]?.endTurnIdx).toBe(2);
+    expect(parsed.completedBlocks[0]?.turnCount).toBe(2);
+
+    expect(parsed.completedBlocks[1]?.startTurnIdx).toBe(3);
+    expect(parsed.completedBlocks[1]?.endTurnIdx).toBe(3);
+    expect(parsed.completedBlocks[1]?.turnCount).toBe(1);
+  });
+
+  test("recordTokens is strictly idempotent and does not double totals when re-recording", () => {
+    store.clear();
+    const manager = new StatsManager(fakeContext, () => {});
+    const today = new Date().toISOString().slice(0, 10);
+    const ts = Date.now();
+
+    // First recording (e.g. from backfill)
+    manager.recordTokens(today, "Gemini 3.7 Flash", "conv-idem", "Idempotent prompt", "", 50000, 2000, 45000, 5000, "Idempotent prompt", ts, 3);
+    expect(manager.getTodayStats().totalTokens).toBe(52000);
+    expect(manager.getConversationsList()[0]?.turnCount).toBe(3);
+    expect(manager.getRequestsList().length).toBe(1);
+
+    // Second recording of the exact same request block (e.g. from UsageTracker after sync)
+    manager.recordTokens(today, "Gemini 3.7 Flash", "conv-idem", "Idempotent prompt", "", 50000, 2000, 45000, 5000, "Idempotent prompt", ts, 3);
+    expect(manager.getTodayStats().totalTokens).toBe(52000); // must remain 52000, not double to 104000
+    expect(manager.getConversationsList()[0]?.turnCount).toBe(3); // must remain 3, not double to 6
+    expect(manager.getRequestsList().length).toBe(1);
+
+    // Third recording with incremented in-progress turn
+    manager.recordTokens(today, "Gemini 3.7 Flash", "conv-idem", "Idempotent prompt", "", 55000, 2500, 49000, 6000, "Idempotent prompt", ts, 4);
+    expect(manager.getTodayStats().totalTokens).toBe(57500); // delta +5500
+    expect(manager.getConversationsList()[0]?.turnCount).toBe(4); // delta +1
+
+    manager.dispose();
+  });
 });
