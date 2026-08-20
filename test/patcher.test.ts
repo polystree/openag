@@ -118,8 +118,8 @@ describe("TokenManager Quota Selection logic", () => {
         if (fam) {
           const p5h = fam.limit5h?.percent ?? fam.percent ?? 100;
           const pWk = fam.limitWeekly?.percent ?? 100;
-          const pct = Math.min(p5h, pWk);
-          const resetStr = fam.limit5h?.resetTime ?? fam.resetTime ?? fam.limitWeekly?.resetTime;
+          const pct = pWk <= 0 ? 0 : p5h;
+          const resetStr = fam.limit5h?.resetTime ?? fam.resetTime;
           const resetTs = resetStr ? Date.parse(resetStr) : Infinity;
           return { percent: pct, resetTs: Number.isNaN(resetTs) ? Infinity : resetTs };
         }
@@ -130,9 +130,9 @@ describe("TokenManager Quota Selection logic", () => {
     for (const f of families) {
       const p5h = f.limit5h?.percent ?? f.percent ?? 100;
       const pWk = f.limitWeekly?.percent ?? 100;
-      const pct = Math.min(p5h, pWk);
+      const pct = pWk <= 0 ? 0 : p5h;
       minPct = Math.min(minPct, pct);
-      const resetTime = f.limit5h?.resetTime ?? f.resetTime ?? f.limitWeekly?.resetTime;
+      const resetTime = f.limit5h?.resetTime ?? f.resetTime;
       if (resetTime) {
         const ts = Date.parse(resetTime);
         if (!Number.isNaN(ts) && ts < minResetTs) minResetTs = ts;
@@ -140,6 +140,15 @@ describe("TokenManager Quota Selection logic", () => {
     }
     return { percent: minPct, resetTs: minResetTs };
   }
+
+  test("prioritizes 5h quota limit to consume short-term window first", () => {
+    const families = [
+      { key: "gemini", label: "Gemini", percent: 95, limit5h: { percent: 95, resetTime: "2026-08-17T22:00:00Z" }, limitWeekly: { percent: 40, resetTime: "2026-08-24T22:00:00Z" } },
+    ];
+    const res = getEffectiveQuota(families, "Gemini 3.7 Flash High");
+    expect(res.percent).toBe(95);
+    expect(res.resetTs).toBe(Date.parse("2026-08-17T22:00:00Z"));
+  });
 
   test("correctly computes effective quota tied to Gemini when Gemini model is active", () => {
     const families = [

@@ -116,9 +116,9 @@ export class StatusBarHUD {
           : null;
     const targetFamily = activeFam ? families.find((f) => f.key === activeFam) : null;
     const effectivePct = targetFamily
-      ? Math.min(targetFamily.limit5h?.percent ?? targetFamily.percent ?? 100, targetFamily.limitWeekly?.percent ?? 100)
+      ? ((targetFamily.limitWeekly?.percent ?? 100) <= 0 ? 0 : (targetFamily.limit5h?.percent ?? targetFamily.percent ?? 100))
       : families.length > 0
-        ? Math.min(...families.map((f) => Math.min(f.limit5h?.percent ?? f.percent, f.limitWeekly?.percent ?? 100)))
+        ? Math.min(...families.map((f) => ((f.limitWeekly?.percent ?? 100) <= 0 ? 0 : (f.limit5h?.percent ?? f.percent ?? 100))))
         : 100;
     const ctxStr = this.currentContext?.limit ? ` [${fmtTokens(this.currentContext.current)}/${fmtTokens(this.currentContext.limit)}]` : "";
 

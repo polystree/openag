@@ -244,7 +244,7 @@ export class UsageTracker {
       const parsed = parseTranscriptLines(lines, "", convTitle);
 
       if (isPathChanged) {
-        this.lastProcessedLineCount = parsed.completedEndLine;
+        this.lastProcessedLineCount = 0;
         this.lastProcessedPath = this.activeTranscriptPath;
         this.lastProcessedGenIdx = 0;
       }

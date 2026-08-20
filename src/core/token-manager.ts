@@ -221,8 +221,8 @@ export class TokenManager {
         if (fam) {
           const p5h = fam.limit5h?.percent ?? fam.percent ?? 100;
           const pWk = fam.limitWeekly?.percent ?? 100;
-          const pct = Math.min(p5h, pWk);
-          const resetStr = fam.limit5h?.resetTime ?? fam.resetTime ?? fam.limitWeekly?.resetTime;
+          const pct = pWk <= 0 ? 0 : p5h;
+          const resetStr = fam.limit5h?.resetTime ?? fam.resetTime;
           const resetTs = resetStr ? Date.parse(resetStr) : Infinity;
           return { percent: pct, resetTs: Number.isNaN(resetTs) ? Infinity : resetTs };
         }
@@ -233,9 +233,9 @@ export class TokenManager {
     for (const f of q.families) {
       const p5h = f.limit5h?.percent ?? f.percent ?? 100;
       const pWk = f.limitWeekly?.percent ?? 100;
-      const pct = Math.min(p5h, pWk);
+      const pct = pWk <= 0 ? 0 : p5h;
       minPct = Math.min(minPct, pct);
-      const resetTime = f.limit5h?.resetTime ?? f.resetTime ?? f.limitWeekly?.resetTime;
+      const resetTime = f.limit5h?.resetTime ?? f.resetTime;
       if (resetTime) {
         const ts = Date.parse(resetTime);
         if (!Number.isNaN(ts) && ts < minResetTs) minResetTs = ts;
