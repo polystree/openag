@@ -35,6 +35,7 @@ describe("GenMetadataReader", () => {
   });
 
   test("readGenMetadata extracts token counts from real conversation database", () => {
+    if (!fs.existsSync(convDir)) return;
     const dbs = fs.readdirSync(convDir).filter((f: string) => f.endsWith(".db"));
     if (dbs.length === 0) return;
 
@@ -55,6 +56,7 @@ describe("GenMetadataReader", () => {
   });
 
   test("readGenMetadataSince returns only turns after the given index", () => {
+    if (!fs.existsSync(convDir)) return;
     const dbs = fs.readdirSync(convDir).filter((f: string) => f.endsWith(".db"));
     if (dbs.length === 0) return;
 
