@@ -13,7 +13,7 @@
 <p>OpenAG pools multiple Google accounts and automatically switches to whichever account has the most quota left, with no external tools or proxies required and feels native.</p>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/polystree/openag/main/resources/ss.jpg" alt="OpenAG Interface" width="400" />
+  <img src="https://raw.githubusercontent.com/polystree/openag/main/resources/ss.png" alt="OpenAG Interface" width="400" />
   <img src="https://raw.githubusercontent.com/polystree/openag/main/resources/ss2.png" alt="OpenAG Token Statistics" width="400" />
 </p>
 
