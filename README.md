@@ -6,13 +6,16 @@
 
 ### Automatic multi-account quota pool and switcher for Google Antigravity
 
-[![Open VSX](https://img.shields.io/badge/Open_VSX-v1.1.2-fa6400?style=flat-square&logo=eclipseide&logoColor=white)](https://open-vsx.org/extension/polystree/openag)
+[![Open VSX](https://img.shields.io/badge/Open_VSX-v1.2.0-fa6400?style=flat-square&logo=eclipseide&logoColor=white)](https://open-vsx.org/extension/polystree/openag)
 [![License](https://img.shields.io/badge/License-MIT-00b4d8?style=flat-square)](LICENSE)
 [![Sponsor](https://img.shields.io/badge/Sponsor-Support_this_project-ff69b4?style=flat-square&logo=github-sponsors&logoColor=white)](https://github.com/sponsors/polystree)
 
 <p>OpenAG pools multiple Google accounts and automatically switches to whichever account has the most quota left, with no external tools or proxies required and feels native.</p>
 
-<img src="https://raw.githubusercontent.com/polystree/openag/main/resources/ss.jpg" alt="OpenAG Interface" width="480" />
+<p align="center">
+  <img src="https://raw.githubusercontent.com/polystree/openag/main/resources/ss.jpg" alt="OpenAG Interface" width="400" />
+  <img src="https://raw.githubusercontent.com/polystree/openag/main/resources/ss2.png" alt="OpenAG Token Statistics" width="400" />
+</p>
 
 </div>
 
@@ -21,7 +24,10 @@
 ## What It Does
 
 - **Auto Account Switching**: Automatically routes to the account with the highest available quota.
+- **Interactive Token Statistics**: Visual consumption analytics across time horizons (Today, 7D, 4W, 12M) with prompt, completion, and cache breakdown.
+- **Context Tracking**: Live context window tracking.
 - **Auto-Run Terminal Fix**: Fixes Antigravity's "Always Proceed" terminal policy so commands execute automatically without asking to confirm every time.
+- **Email Privacy Mode**: Toggle between full email addresses and anonymized account identifiers.
 - **Status Bar HUD**: See your active account, remaining quota, reset timers, and context usage at a glance.
 - **Easy Account Pool**: Add your Google accounts once and let OpenAG handle the rotation in the background.
 - **Secure by Default**: All tokens are safely stored in your system's secure keychain.
