@@ -1,9 +1,12 @@
+import type * as vscode from "vscode";
 import type { Account, AccountQuota, AccountTier, FamilyQuota, ModelQuota, QuotaLimitInfo } from "../types.js";
 import type { TokenManager } from "./token-manager.js";
 import type { UsageTracker } from "./usage-tracker.js";
 
 const ENDPOINT = "https://cloudcode-pa.googleapis.com";
 const CODE_ASSIST_BODY = JSON.stringify({ metadata: { ideType: "ANTIGRAVITY", ideVersion: "2.5.5" } });
+const FIVE_HOURS = 5 * 60 * 60 * 1000;
+const KEY_QUOTA_CACHE = "openag.quota_cache.v1";
 
 interface QuotaBucket {
   bucketId?: string;
@@ -26,6 +29,7 @@ interface QuotaResponse {
 export class QuotaMonitor {
   private readonly quotas = new Map<string, AccountQuota>();
   private pollTimer: NodeJS.Timeout | null = null;
+  private cleanupTimer: NodeJS.Timeout | null = null;
   private modelsDiscovered = false;
 
   constructor(
@@ -33,15 +37,44 @@ export class QuotaMonitor {
     private readonly log: (msg: string) => void,
     private readonly onQuotaUpdate?: (quota: AccountQuota) => void,
     private readonly usageTracker?: UsageTracker,
-  ) {}
+    private readonly context?: vscode.ExtensionContext,
+  ) {
+    if (this.context) {
+      const cached = this.context.globalState.get<Record<string, AccountQuota>>(KEY_QUOTA_CACHE, {});
+      if (cached && typeof cached === "object") {
+        for (const [email, q] of Object.entries(cached)) {
+          if (q && email) this.quotas.set(email.toLowerCase(), q);
+        }
+      }
+    }
+    this.cleanupExpiredQuotas();
+    this.cleanupTimer = setInterval(() => this.cleanupExpiredQuotas(), 3600000);
+  }
 
   public initialize(): void {
     this.startPolling();
     void this.pollAllAccounts();
   }
 
-  public getQuota = (email: string): AccountQuota | undefined => this.quotas.get(email.toLowerCase());
-  public getAllQuotas = (): Record<string, AccountQuota> => Object.fromEntries(this.quotas);
+  public cleanupExpiredQuotas(): void {
+    const now = Date.now();
+    for (const [email, q] of this.quotas.entries()) {
+      if (q.lastUpdated && now - q.lastUpdated > FIVE_HOURS) {
+        this.quotas.delete(email);
+      }
+    }
+    if (this.context) {
+      void this.context.globalState.update(KEY_QUOTA_CACHE, this.getAllQuotas());
+    }
+  }
+
+  public getQuota(email: string): AccountQuota | undefined {
+    return this.quotas.get(email.toLowerCase());
+  }
+
+  public getAllQuotas(): Record<string, AccountQuota> {
+    return Object.fromEntries(this.quotas);
+  }
 
   public async refreshAccountQuota(email: string): Promise<AccountQuota | null> {
     const acc = this.tokenManager.getAccounts().find((a) => a.email.toLowerCase() === email.toLowerCase());
@@ -132,6 +165,9 @@ export class QuotaMonitor {
 
       const quota: AccountQuota = { email: account.email, tier, families, models, lastUpdated: Date.now() };
       this.quotas.set(account.email.toLowerCase(), quota);
+      if (this.context) {
+        void this.context.globalState.update(KEY_QUOTA_CACHE, this.getAllQuotas());
+      }
       this.onQuotaUpdate?.(quota);
       if (!skipAutoRotation) this.checkAutoRotation(account.email);
       return quota;
@@ -230,5 +266,6 @@ export class QuotaMonitor {
 
   public dispose(): void {
     if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null; }
+    if (this.cleanupTimer) { clearInterval(this.cleanupTimer); this.cleanupTimer = null; }
   }
 }

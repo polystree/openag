@@ -1,3 +1,4 @@
+import * as crypto from "node:crypto";
 import * as vscode from "vscode";
 import type { Account, AccountQuota, AccountTier, OAuthTokens, OpenAGConfig } from "../types.js";
 import { USSBridge } from "./uss-bridge.js";
@@ -5,6 +6,7 @@ import { USSBridge } from "./uss-bridge.js";
 const KEY_ACCOUNTS = "openag.accounts.v1";
 const KEY_ACTIVE = "openag.active_account.v1";
 const KEY_CONFIG = "openag.config.v1";
+
 export class TokenManager {
   private accounts: Account[] = [];
   private activeEmail = "";
@@ -13,6 +15,8 @@ export class TokenManager {
   private refreshTimer: NodeJS.Timeout | null = null;
   private readonly onAccountChangeEmitter = new vscode.EventEmitter<void>();
   public readonly onAccountChange = this.onAccountChangeEmitter.event;
+  private lastSyncedToken: string | null = null;
+  private lastSyncedEmail: string | null = null;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -47,12 +51,29 @@ export class TokenManager {
     this.log(`TokenManager initialized with ${this.accounts.length} accounts, active: ${this.activeEmail || "none"}`);
   }
 
-  private getSecretKey = (email: string): string => `openag.secret.${email.toLowerCase()}`;
-  public getAccounts = (): Account[] => [...this.accounts];
-  public getActiveEmail = (): string => this.activeEmail;
-  public getConfig = (): OpenAGConfig => ({ ...this.config });
-  public isExtensionEnabled = (): boolean => this.config.enabled ?? true;
-  public isRotationEnabled = (): boolean => this.config.enabled ?? true;
+  private getSecretKey(email: string): string {
+    return `openag.secret.${email.toLowerCase()}`;
+  }
+
+  public getAccounts(): Account[] {
+    return [...this.accounts];
+  }
+
+  public getActiveEmail(): string {
+    return this.activeEmail;
+  }
+
+  public getConfig(): OpenAGConfig {
+    return { ...this.config };
+  }
+
+  public isExtensionEnabled(): boolean {
+    return this.config.enabled ?? true;
+  }
+
+  public isRotationEnabled(): boolean {
+    return this.config.enabled ?? true;
+  }
 
   public async updateConfig(newConfig: Partial<OpenAGConfig>): Promise<void> {
     this.config = { ...this.config, ...newConfig };
@@ -70,7 +91,7 @@ export class TokenManager {
 
     const updated: Account = existing
       ? { ...existing, tier: account.tier || existing.tier || "pro", status: account.status || existing.status, tokenExpiresAt, accessToken, refreshToken, updatedAt: now }
-      : { id: `acc_${now}_${Math.random().toString(36).slice(2, 7)}`, email: account.email, alias: account.alias, tier: account.tier || "pro", status: account.status || "active", sortOrder: account.sortOrder ?? this.accounts.length, projectId: account.projectId, tokenExpiresAt, accessToken, refreshToken, createdAt: now, updatedAt: now };
+      : { id: `acc_${now}_${crypto.randomUUID().slice(0, 8)}`, email: account.email, alias: account.alias, tier: account.tier || "pro", status: account.status || "active", sortOrder: account.sortOrder ?? this.accounts.length, projectId: account.projectId, tokenExpiresAt, accessToken, refreshToken, createdAt: now, updatedAt: now };
 
     await this.context.secrets.store(this.getSecretKey(account.email), JSON.stringify({ accessToken, refreshToken, expiryDateSeconds: tokenExpiresAt }));
     if (idx >= 0) this.accounts[idx] = updated;
@@ -272,13 +293,33 @@ export class TokenManager {
     };
   }
 
-  public async syncActiveTokenToUss(): Promise<void> {
+  public async syncActiveTokenToUss(force = false): Promise<void> {
     if (!this.isExtensionEnabled()) return;
     const active = this.getActiveAccount();
     if (!active) return;
     try {
       const token = await this.getValidAccessToken(active);
-      await USSBridge.setOAuthToken({ accessToken: token, refreshToken: active.refreshToken || "", expiryDateSeconds: active.tokenExpiresAt, tokenType: "Bearer" });
+      if (!force && this.lastSyncedEmail === active.email && this.lastSyncedToken === token) {
+        return;
+      }
+      this.lastSyncedEmail = active.email;
+      this.lastSyncedToken = token;
+      await USSBridge.setOAuthToken({
+        accessToken: token,
+        refreshToken: active.refreshToken || "",
+        expiryDateSeconds: active.tokenExpiresAt,
+        tokenType: "Bearer",
+        isGcpTos: false,
+      });
+      void fetch("https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+          "User-Agent": "Antigravity/2.5.5",
+        },
+        body: JSON.stringify({ metadata: { ideType: "ANTIGRAVITY", ideVersion: "2.5.5" } }),
+      }).catch(() => {});
     } catch (e: unknown) {
       this.log(`[USS] Failed to sync token to USS: ${e instanceof Error ? e.message : String(e)}`);
     }

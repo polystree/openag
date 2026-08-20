@@ -3,6 +3,7 @@ import { LogManager } from "./core/log-manager.js";
 import { OAuthFlow } from "./core/oauth-flow.js";
 import { AutoRunPatcher } from "./core/patcher.js";
 import { QuotaMonitor } from "./core/quota-monitor.js";
+import { StatsManager } from "./core/stats-manager.js";
 import { TokenManager } from "./core/token-manager.js";
 import { UsageTracker } from "./core/usage-tracker.js";
 import { USSBridge } from "./core/uss-bridge.js";
@@ -28,16 +29,15 @@ const log = (msg: string): void => {
   logManager?.addLog(lvl, cat, msg);
 };
 
-export async function activate(context: vscode.ExtensionContext): Promise<unknown> {
+let statsManager: StatsManager | null = null;
+
+export function activate(context: vscode.ExtensionContext): unknown {
   outputChannel = vscode.window.createOutputChannel("OpenAG");
-  logManager = new LogManager();
-  usageTracker = new UsageTracker();
-  context.subscriptions.push(logManager, usageTracker);
-
-  log("Activating OpenAG...");
-
+  logManager = new LogManager(context);
+  statsManager = new StatsManager(context, log);
+  usageTracker = new UsageTracker(statsManager);
   tokenManager = new TokenManager(context, log);
-  await tokenManager.initialize();
+  statusBar = new StatusBarHUD(context);
 
   quotaMonitor = new QuotaMonitor(
     tokenManager,
@@ -49,19 +49,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
       webviewProvider?.refresh();
     },
     usageTracker,
+    context,
   );
-  quotaMonitor.initialize();
 
-  statusBar = new StatusBarHUD(context);
-  const activeAcc = tokenManager.getActiveAccount();
-  const initQuota = activeAcc ? quotaMonitor.getQuota(activeAcc.email) : null;
-  statusBar.updateAccount(tokenManager.getActiveEmail(), activeAcc?.tier || "unknown", tokenManager.isExtensionEnabled(), initQuota);
+  webviewProvider = new WebviewProvider(context, tokenManager, quotaMonitor, log, logManager, statsManager);
 
-  usageTracker.onContextChange((ctx) => statusBar?.updateContext(ctx));
-  logManager.onLog(() => webviewProvider?.refresh());
-
-  webviewProvider = new WebviewProvider(context, tokenManager, quotaMonitor, log, logManager);
   context.subscriptions.push(
+    logManager,
+    usageTracker,
+    statsManager,
     vscode.window.registerWebviewViewProvider(WebviewProvider.viewType, webviewProvider, {
       webviewOptions: { retainContextWhenHidden: true },
     }),
@@ -73,6 +69,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
       webviewProvider?.refresh();
     }),
   );
+
+  usageTracker.onContextChange((ctx) => statusBar?.updateContext(ctx));
+  logManager.onLog(() => webviewProvider?.refresh());
+  statsManager.onStatsChange(() => webviewProvider?.refresh());
 
   const syncIdeAuth = async () => {
     if (!tokenManager?.isExtensionEnabled()) return;
@@ -107,7 +107,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
   };
 
   updateWorkspacePaths();
-  void syncIdeAuth();
+
+  void (async () => {
+    try {
+      log("Activating OpenAG...");
+      if (tokenManager) await tokenManager.initialize();
+      quotaMonitor?.initialize();
+      const activeAcc = tokenManager?.getActiveAccount();
+      const initQuota = activeAcc && quotaMonitor ? quotaMonitor.getQuota(activeAcc.email) : null;
+      statusBar?.updateAccount(tokenManager?.getActiveEmail() || "", activeAcc?.tier || "unknown", tokenManager?.isExtensionEnabled() || true, initQuota);
+      webviewProvider?.refresh();
+      await syncIdeAuth();
+    } catch (err) {
+      log(`OpenAG background init error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  })();
+
   const syncTimer = setInterval(() => void syncIdeAuth(), 10000);
 
   context.subscriptions.push(

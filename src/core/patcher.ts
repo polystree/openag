@@ -1,16 +1,9 @@
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import type { PatcherStatus, PatchItem } from "../types.js";
 
-const PATCH_TAG = "/*OPENAG:autorun*/";
-
-export interface PatcherStatus {
-  isPatched: boolean;
-  supported: boolean;
-  appRoot: string | null;
-  version: string;
-  error?: string;
-}
+const TAG_AUTORUN = "/*OPENAG:autorun*/";
 
 let cachedAppRoot: string | null = null;
 
@@ -56,10 +49,25 @@ function getAppRoot(): string | null {
   return null;
 }
 
+function getOriginalContent(fullPath: string): string | null {
+  if (!fs.existsSync(fullPath)) return null;
+  const backupPath = `${fullPath}.openag-backup`;
+  if (fs.existsSync(backupPath)) {
+    return fs.readFileSync(backupPath, "utf8");
+  }
+  const current = fs.readFileSync(fullPath, "utf8");
+  if (!current.includes("/*OPENAG:")) {
+    try {
+      fs.copyFileSync(fullPath, backupPath);
+    } catch { /* ignore */ }
+  }
+  return current;
+}
+
 function getStatus(): PatcherStatus {
   const appRoot = getAppRoot();
   if (!appRoot) {
-    return { isPatched: false, supported: false, appRoot: null, version: "unknown", error: "Antigravity install directory not found" };
+    return { supported: false, appRoot: null, version: "unknown", error: "Antigravity install directory not found", patches: [] };
   }
 
   let version = "unknown";
@@ -68,21 +76,40 @@ function getStatus(): PatcherStatus {
     version = pkg.version || "unknown";
   } catch { /* ignore */ }
 
-  const target = path.join(appRoot, "out", "jetskiAgent", "main.js");
-  if (!fs.existsSync(target)) {
-    return { isPatched: false, supported: false, appRoot, version, error: "jetskiAgent/main.js missing" };
+  const jetskiPath = path.join(appRoot, "out", "jetskiAgent", "main.js");
+  const wbPath = path.join(appRoot, "out", "vs", "workbench", "workbench.desktop.main.js");
+  if (!fs.existsSync(jetskiPath) && !fs.existsSync(wbPath)) {
+    return { supported: false, appRoot, version, error: "Antigravity bundle files missing", patches: [] };
   }
 
-  try {
-    const content = fs.readFileSync(target, "utf8");
-    const isPatched = content.includes(PATCH_TAG);
-    return { isPatched, supported: true, appRoot, version };
-  } catch (err) {
-    return { isPatched: false, supported: false, appRoot, version, error: String(err) };
+  const jetskiContent = fs.existsSync(jetskiPath) ? fs.readFileSync(jetskiPath, "utf8") : "";
+  const wbContent = fs.existsSync(wbPath) ? fs.readFileSync(wbPath, "utf8") : "";
+  const currentContent = jetskiContent + wbContent;
+
+  const origJetski = (fs.existsSync(jetskiPath) ? getOriginalContent(jetskiPath) : null) || jetskiContent;
+  const origWb = (fs.existsSync(wbPath) ? getOriginalContent(wbPath) : null) || wbContent;
+  const origContent = origJetski + origWb;
+
+  const patches: PatchItem[] = [
+    {
+      id: "autorun",
+      name: "Auto-Run Terminal",
+      description: "Auto-approves terminal commands on mount without waiting for manual confirmation prompts.",
+      isPatched: currentContent.includes(TAG_AUTORUN),
+      canApply: origContent.includes('{case:"runCommand",value:'),
+    },
+  ];
+
+  for (const p of patches) {
+    if (!p.canApply && !p.isPatched) {
+      p.warning = "Code pattern not found in current Antigravity version. Patch disabled to prevent crash.";
+    }
   }
+
+  return { supported: true, appRoot, version, patches };
 }
 
-function apply(): { success: boolean; message: string } {
+function applyPatches(enabledIds: Set<string>): { success: boolean; message: string } {
   const appRoot = getAppRoot();
   if (!appRoot) return { success: false, message: "Could not locate Antigravity installation path." };
 
@@ -104,43 +131,51 @@ function apply(): { success: boolean; message: string } {
 
     for (const { rel, hookId, effectId } of targets) {
       const fullPath = path.join(appRoot, rel);
-      if (!fs.existsSync(fullPath)) continue;
+      const origContent = getOriginalContent(fullPath);
+      if (!origContent) continue;
 
-      const backupPath = `${fullPath}.openag-backup`;
-      let content = fs.existsSync(backupPath) ? fs.readFileSync(backupPath, "utf8") : fs.readFileSync(fullPath, "utf8");
-      if (!fs.existsSync(backupPath)) {
-        fs.copyFileSync(fullPath, backupPath);
+      let content = origContent;
+
+      // Anti-corruption: suppress VS Code integrity check warning and mark as pure
+      if (content.includes("async _isPure(){const e=this.productService.checksums||{};")) {
+        content = content.replace(
+          "async _isPure(){const e=this.productService.checksums||{};",
+          "async _isPure(){return{isPure:!0,proof:[]};const e=this.productService.checksums||{};",
+        );
+      }
+      if (content.includes("async _compute(){const{isPure:e}=await this.isPure();if(e)return;")) {
+        content = content.replace(
+          "async _compute(){const{isPure:e}=await this.isPure();if(e)return;",
+          "async _compute(){return;const{isPure:e}=await this.isPure();if(e)return;",
+        );
       }
 
-      const anchor = '{case:"runCommand",value:';
-      let patched = false;
-      for (let idx = content.indexOf(anchor); idx !== -1; idx = content.indexOf(anchor, idx + anchor.length)) {
-        const winStart = Math.max(0, idx - 150);
-        const winEnd = Math.min(content.length, idx + 50);
-        const winStr = content.slice(winStart, winEnd);
-        const match = winStr.match(/([a-zA-Z0-9_$]+)\s*=\s*([a-zA-Z0-9_$]+)\s*\(\s*([a-zA-Z0-9_$]+)\s*=>\s*\{/);
-        if (match) {
-          const cbVar = match[1];
-          const afterAnchor = content.slice(idx, idx + 300);
-          const cbEndMatch = afterAnchor.match(/\},\s*\[[^\]]*\]\s*\)\s*;/);
-          if (cbEndMatch && cbEndMatch.index !== undefined) {
-            const cbEndPos = idx + cbEndMatch.index + cbEndMatch[0].length;
-            const patchCode = `${PATCH_TAG};((typeof ${effectId}==="function"?${effectId}:null)||(typeof React!=="undefined"?React.useEffect:null))?.(()=>{try{let _h=(typeof ${hookId}==="function"?${hookId}:null);let _st=_h?.()?.stepHandler;if(!_st?.secureModeEnabled)${cbVar}(!0)}catch{}},[${cbVar}]);`;
-            content = content.slice(0, cbEndPos) + patchCode + content.slice(cbEndPos);
-            patched = true;
-            break;
+      if (enabledIds.has("autorun")) {
+        const anchor = '{case:"runCommand",value:';
+        for (let idx = content.indexOf(anchor); idx !== -1; idx = content.indexOf(anchor, idx + anchor.length)) {
+          const winStart = Math.max(0, idx - 150);
+          const winEnd = Math.min(content.length, idx + 50);
+          const winStr = content.slice(winStart, winEnd);
+          const match = winStr.match(/([a-zA-Z0-9_$]+)\s*=\s*([a-zA-Z0-9_$]+)\s*\(\s*([a-zA-Z0-9_$]+)\s*=>\s*\{/);
+          if (match) {
+            const cbVar = match[1];
+            const afterAnchor = content.slice(idx, idx + 300);
+            const cbEndMatch = afterAnchor.match(/\},\s*\[[^\]]*\]\s*\)\s*;/);
+            if (cbEndMatch && cbEndMatch.index !== undefined) {
+              const cbEndPos = idx + cbEndMatch.index + cbEndMatch[0].length;
+              const patchCode = `${TAG_AUTORUN};((typeof ${effectId}==="function"?${effectId}:null)||(typeof React!=="undefined"?React.useEffect:null))?.(()=>{try{let _h=(typeof ${hookId}==="function"?${hookId}:null);let _st=_h?.()?.stepHandler;if(!_st?.secureModeEnabled)${cbVar}(!0)}catch{}},[${cbVar}]);`;
+              content = content.slice(0, cbEndPos) + patchCode + content.slice(cbEndPos);
+              break;
+            }
           }
         }
+        content = content.replace(/label:"Always run",isAllowed:[a-zA-Z0-9_$]+&&![a-zA-Z0-9_$]+/g, 'label:"Always run",isAllowed:!0');
       }
 
-      content = content.replace(/label:"Always run",isAllowed:[a-zA-Z0-9_$]+&&![a-zA-Z0-9_$]+/g, 'label:"Always run",isAllowed:!0');
-
-      if (patched) {
-        fs.writeFileSync(fullPath, content, "utf8");
-        const normRel = rel.replace(/^out[\\/]/, "").replace(/\\/g, "/");
-        if (productJson.checksums) {
-          productJson.checksums[normRel] = crypto.createHash("sha256").update(content).digest("base64").replace(/=+$/, "");
-        }
+      fs.writeFileSync(fullPath, content, "utf8");
+      const normRel = rel.replace(/^out[\\/]/, "").replace(/\\/g, "/");
+      if (productJson.checksums) {
+        productJson.checksums[normRel] = crypto.createHash("sha256").update(content).digest("base64").replace(/=+$/, "");
       }
     }
 
@@ -148,13 +183,33 @@ function apply(): { success: boolean; message: string } {
       fs.writeFileSync(productPath, JSON.stringify(productJson, null, "\t"), "utf8");
     }
 
-    return { success: true, message: "Auto-Run fix applied successfully! Restart or reload Antigravity to take effect." };
+    return { success: true, message: "Settings updated successfully! Reload Antigravity window to take effect." };
   } catch (err) {
-    return { success: false, message: `Failed to apply Auto-Run fix: ${String(err)}` };
+    return { success: false, message: `Failed to update settings: ${String(err)}` };
   }
 }
 
-function revert(): { success: boolean; message: string } {
+function togglePatch(patchId: string, enable?: boolean): { success: boolean; message: string } {
+  const status = getStatus();
+  const target = status.patches.find((p) => p.id === patchId);
+  if (!target) return { success: false, message: `Unknown patch: ${patchId}` };
+
+  const currentPatched = new Set(status.patches.filter((p) => p.isPatched).map((p) => p.id));
+  const willEnable = enable !== undefined ? enable : !target.isPatched;
+
+  if (willEnable) {
+    if (!target.canApply && !target.isPatched) {
+      return { success: false, message: target.warning || "Cannot apply patch on this Antigravity build." };
+    }
+    currentPatched.add(patchId);
+  } else {
+    currentPatched.delete(patchId);
+  }
+
+  return applyPatches(currentPatched);
+}
+
+function revertAll(): { success: boolean; message: string } {
   const appRoot = getAppRoot();
   if (!appRoot) return { success: false, message: "Could not locate Antigravity installation path." };
 
@@ -179,15 +234,18 @@ function revert(): { success: boolean; message: string } {
       }
     }
 
-    return { success: true, message: "Auto-Run fix reverted successfully. Original files restored." };
+    return { success: true, message: "All patches reverted. Original Antigravity files restored." };
   } catch (err) {
-    return { success: false, message: `Failed to revert Auto-Run fix: ${String(err)}` };
+    return { success: false, message: `Failed to revert patches: ${String(err)}` };
   }
 }
 
 export const AutoRunPatcher = {
   getAppRoot,
   getStatus,
-  apply,
-  revert,
+  togglePatch,
+  applyPatches,
+  revertAll,
+  apply: () => togglePatch("autorun", true),
+  revert: () => togglePatch("autorun", false),
 };

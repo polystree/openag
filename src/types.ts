@@ -48,6 +48,7 @@ export interface AccountQuota {
 
 export interface OpenAGConfig {
   enabled: boolean;
+  hideEmail?: boolean;
 }
 
 export interface LogEntry {
@@ -71,6 +72,86 @@ export interface OAuthTokens {
   refreshToken: string;
   expiryDateSeconds: number;
   tokenType?: string;
+  isGcpTos?: boolean;
+}
+
+export interface PatchItem {
+  id: string;
+  name: string;
+  description: string;
+  isPatched: boolean;
+  canApply: boolean;
+  warning?: string;
+}
+
+export interface PatcherStatus {
+  supported: boolean;
+  appRoot: string | null;
+  version: string;
+  error?: string;
+  patches: PatchItem[];
+}
+
+export interface TokenBucket {
+  inputTokens: number;
+  outputTokens: number;
+  cacheHitTokens: number;
+  cacheMissTokens: number;
+  totalTokens: number;
+}
+
+export interface RequestStats {
+  id: string;
+  timestamp: number;
+  promptPreview: string;
+  model: string;
+  turnCount: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheHitTokens: number;
+  totalTokens: number;
+}
+
+export interface ConversationStats extends TokenBucket {
+  id: string;
+  title: string;
+  workspace: string;
+  model: string;
+  turnCount: number;
+  lastActive: number;
+}
+
+export interface HourlyTokenStats extends TokenBucket {
+  hourLabel: string;
+  hour: number;
+  models: Record<string, TokenBucket>;
+}
+
+export interface DayTokenStats extends TokenBucket {
+  date: string; // "YYYY-MM-DD"
+  models: Record<string, TokenBucket>;
+  conversations: Record<string, TokenBucket>;
+}
+
+export interface WeekTokenStats extends TokenBucket {
+  weekLabel: string;
+  startDate: string;
+  endDate: string;
+  models: Record<string, TokenBucket>;
+}
+
+export interface MonthTokenStats extends TokenBucket {
+  monthLabel: string;
+  startDate: string;
+  endDate: string;
+  models: Record<string, TokenBucket>;
+}
+
+export interface TokenStatsRegistry {
+  days: Record<string, DayTokenStats>;
+  conversations: Record<string, ConversationStats>;
+  requests: RequestStats[];
+  lastUpdated: number;
 }
 
 declare const __PKG_VERSION__: string | undefined;

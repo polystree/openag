@@ -52,6 +52,7 @@ export const USSBridge = {
         refreshToken: token.refreshToken || "",
         expiryDateSeconds: token.expiryDateSeconds || Math.floor(Date.now() / 1000) + 3600,
         tokenType: token.tokenType || "Bearer",
+        isGcpTos: token.isGcpTos ?? false,
       });
 
       const uss = api as unknown as Record<string, unknown> | undefined;
@@ -67,7 +68,14 @@ export const USSBridge = {
         }
       }
 
-      for (const cmd of ["antigravity.refreshAuth", "antigravity.refreshStatus", "antigravity.syncState", "antigravity.getUserStatus", "jetski.refresh"]) {
+      for (const cmd of [
+        "antigravity.restartLanguageServer",
+        "antigravity.refreshAuth",
+        "antigravity.refreshStatus",
+        "antigravity.syncState",
+        "antigravity.getUserStatus",
+        "jetski.refresh",
+      ]) {
         try { void vscode.commands.executeCommand(cmd); } catch { /* ignore */ }
       }
       return true;

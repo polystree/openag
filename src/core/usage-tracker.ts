@@ -3,12 +3,21 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import type { ContextUsage } from "../types.js";
+import { extractAntigravityTitle, formatDynamicModelName, type StatsManager } from "./stats-manager.js";
 
 const BRAIN_DIR = path.join(os.homedir(), ".gemini", "antigravity-ide", "brain");
 const CONV_DIR = path.join(os.homedir(), ".gemini", "antigravity-ide", "conversations");
 
 const BPE_PATTERN = /'(?:[sdmt]|ll|ve|re)| ?[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+/gu;
-const BASE_SYSTEM_PROMPT_CHARS = 16000;
+const BASE_SYSTEM_PROMPT_TOKENS = 4200;
+
+function normalizePath(p: string): string {
+  if (!p) return "";
+  try {
+    p = decodeURIComponent(p);
+  } catch { /* ignore */ }
+  return p.replace(/\\/g, "/").toLowerCase().replace(/^file:\/\/\/?/, "").replace(/^\/+/, "").replace(/\/$/, "");
+}
 
 interface SqliteDb {
   prepare: (sql: string) => { get: (param?: unknown) => { data?: Uint8Array | Buffer } | undefined };
@@ -17,27 +26,37 @@ interface SqliteDb {
 
 export function countBpeTokens(text: string): number {
   if (!text) return 0;
+  BPE_PATTERN.lastIndex = 0;
   let total = 0;
-  for (const m of text.matchAll(BPE_PATTERN)) {
-    const s = m[0];
-    total += s.length <= 8 ? 1 : Math.ceil(s.length / 4);
+  for (let m = BPE_PATTERN.exec(text); m !== null; m = BPE_PATTERN.exec(text)) {
+    const len = m[0].length;
+    total += len <= 8 ? 1 : ((len + 3) >> 2);
   }
   return total;
 }
 
 export class UsageTracker {
-  private activeModel = "gemini";
+  private activeModel = "Gemini 3.7 Flash High";
   private readonly modelContextLimits = new Map<string, number>();
   private currentUsage: ContextUsage = {
     current: 0,
     limit: 1048576,
-    model: "gemini",
+    model: "Gemini 3.7 Flash High",
     percent: 0,
   };
 
   private activeConversationId: string | null = null;
   private activeTranscriptPath: string | null = null;
   private workspacePaths: string[] = [];
+  private lastProcessedLineCount = 0;
+  private lastProcessedPath: string | null = null;
+
+  private cachedLineTokens: number[] = [];
+  private cachedRunningTokens = BASE_SYSTEM_PROMPT_TOKENS;
+  private cachedInitialPrompt = "";
+  private isComputing = false;
+
+  private readonly dbWorkspaceCache = new Map<string, { mtime: number; size: number; uri: string | null }>();
 
   private transcriptWatcher: fs.FSWatcher | null = null;
   private convDirWatcher: fs.FSWatcher | null = null;
@@ -47,10 +66,13 @@ export class UsageTracker {
   private readonly onContextChangeEmitter = new vscode.EventEmitter<ContextUsage>();
   public readonly onContextChange = this.onContextChangeEmitter.event;
 
-  constructor() {
+  constructor(private readonly statsManager?: StatsManager) {
     this.initWatchers();
     this.refresh();
     this.pollInterval = setInterval(() => this.refresh(), 10000);
+    if (this.statsManager) {
+      void this.statsManager.backfillFromTranscripts(BRAIN_DIR, countBpeTokens);
+    }
   }
 
   public registerModelMetadata(models: Record<string, { maxTokens?: number }>): void {
@@ -63,12 +85,17 @@ export class UsageTracker {
   }
 
   public setWorkspacePaths(paths: string[]): void {
-    this.workspacePaths = paths.map((p) => p.replace(/\\/g, "/").toLowerCase().replace(/^file:\/\/\//, ""));
+    this.workspacePaths = paths.map((p) => normalizePath(p)).filter(Boolean);
     this.refresh();
   }
 
-  public getActiveModel = (): string => this.activeModel;
-  public getCurrentUsage = (): ContextUsage => ({ ...this.currentUsage });
+  public getActiveModel(): string {
+    return this.activeModel;
+  }
+
+  public getCurrentUsage(): ContextUsage {
+    return { ...this.currentUsage };
+  }
 
   public getModelContextLimit(modelId?: string): number {
     const key = (modelId || this.activeModel || "").toLowerCase();
@@ -90,6 +117,11 @@ export class UsageTracker {
     if (convId !== this.activeConversationId) {
       this.activeConversationId = convId;
       this.activeTranscriptPath = path.join(BRAIN_DIR, convId, ".system_generated", "logs", "transcript.jsonl");
+      this.lastProcessedLineCount = 0;
+      this.lastProcessedPath = null;
+      this.cachedLineTokens = [];
+      this.cachedRunningTokens = BASE_SYSTEM_PROMPT_TOKENS;
+      this.cachedInitialPrompt = "";
       this.attachTranscriptWatcher();
     }
 
@@ -128,11 +160,18 @@ export class UsageTracker {
     this.debounceTimer = setTimeout(() => {
       this.debounceTimer = null;
       void this.computeContextUsage();
-    }, 120);
+    }, 200);
   }
 
   private extractWorkspaceUriFromDb(dbPath: string): string | null {
     try {
+      const st = fs.statSync(dbPath);
+      const cached = this.dbWorkspaceCache.get(dbPath);
+      if (cached && cached.mtime === st.mtimeMs && cached.size === st.size) {
+        return cached.uri;
+      }
+
+      let uri: string | null = null;
       let sqlite: { DatabaseSync: new (p: string, opts?: { readOnly?: boolean; open?: boolean }) => SqliteDb } | null = null;
       try {
         sqlite = require("node:sqlite");
@@ -141,30 +180,36 @@ export class UsageTracker {
       }
 
       if (sqlite?.DatabaseSync) {
-        const db = new sqlite.DatabaseSync(dbPath, { readOnly: true, open: true });
-        const row = db.prepare("SELECT data FROM trajectory_metadata_blob WHERE id=?").get("main");
-        if (typeof db.close === "function") db.close();
-        if (row?.data) {
-          const text = Buffer.from(row.data).toString("utf-8");
-          const m = text.match(/file:\/\/\/[-a-zA-Z0-9_.:~%+/]+/i);
-          if (m) return m[0].toLowerCase();
-        }
+        try {
+          const db = new sqlite.DatabaseSync(dbPath, { readOnly: true, open: true });
+          const row = db.prepare("SELECT data FROM trajectory_metadata_blob WHERE id=?").get("main");
+          if (typeof db.close === "function") db.close();
+          if (row?.data) {
+            const text = Buffer.from(row.data).toString("utf-8");
+            const m = text.match(/file:\/\/\/[-a-zA-Z0-9_.:~%+/]+/i);
+            if (m) uri = normalizePath(m[0]);
+          }
+        } catch { /* ignore */ }
       }
-    } catch { /* ignore */ }
 
-    try {
-      const st = fs.statSync(dbPath);
-      const fd = fs.openSync(dbPath, "r");
-      const readLen = Math.min(st.size, 32768);
-      const buf = Buffer.alloc(readLen);
-      fs.readSync(fd, buf, 0, readLen, 0);
-      fs.closeSync(fd);
-      const text = buf.toString("utf-8");
-      const m = text.match(/file:\/\/\/[-a-zA-Z0-9_.:~%+/]+/i);
-      if (m) return m[0].toLowerCase();
-    } catch { /* ignore */ }
+      if (!uri) {
+        try {
+          const fd = fs.openSync(dbPath, "r");
+          const readLen = Math.min(st.size, 65536);
+          const buf = Buffer.alloc(readLen);
+          fs.readSync(fd, buf, 0, readLen, 0);
+          fs.closeSync(fd);
+          const text = buf.toString("utf-8");
+          const m = text.match(/file:\/\/\/[-a-zA-Z0-9_.:~%+/]+/i);
+          if (m) uri = normalizePath(m[0]);
+        } catch { /* ignore */ }
+      }
 
-    return null;
+      this.dbWorkspaceCache.set(dbPath, { mtime: st.mtimeMs, size: st.size, uri });
+      return uri;
+    } catch {
+      return null;
+    }
   }
 
   private resolveActiveConversationId(): string | null {
@@ -172,116 +217,210 @@ export class UsageTracker {
 
     try {
       const files = fs.readdirSync(CONV_DIR).filter((f) => f.endsWith(".db"));
-      let bestId: string | null = null;
-      let bestMtime = 0;
+      if (files.length === 0) return null;
 
+      const fileStats: Array<{ name: string; fullPath: string; mtime: number }> = [];
       for (const f of files) {
-        const dbPath = path.join(CONV_DIR, f);
+        const fullPath = path.join(CONV_DIR, f);
         try {
-          const st = fs.statSync(dbPath);
-          const wsUri = this.extractWorkspaceUriFromDb(dbPath);
+          const st = fs.statSync(fullPath);
+          fileStats.push({ name: f, fullPath, mtime: st.mtimeMs });
+        } catch { /* ignore */ }
+      }
 
-          if (wsUri && this.workspacePaths.length > 0) {
-            const normUri = wsUri.replace(/^file:\/\/\//, "");
+      fileStats.sort((a, b) => b.mtime - a.mtime);
+
+      if (this.workspacePaths.length > 0) {
+        for (const item of fileStats) {
+          const wsUri = this.extractWorkspaceUriFromDb(item.fullPath);
+          if (wsUri) {
             const isMatch = this.workspacePaths.some(
-              (wp) => normUri.includes(wp) || wp.includes(normUri),
+              (wp) => wsUri.includes(wp) || wp.includes(wsUri),
             );
-            if (isMatch && st.mtimeMs > bestMtime) {
-              bestMtime = st.mtimeMs;
-              bestId = f.replace(".db", "");
+            if (isMatch) {
+              return item.name.replace(".db", "");
             }
           }
-        } catch { /* ignore */ }
+        }
       }
 
-      if (bestId) return bestId;
-
-      let globalMtime = 0;
-      for (const f of files) {
-        try {
-          const st = fs.statSync(path.join(CONV_DIR, f));
-          if (st.mtimeMs > globalMtime) {
-            globalMtime = st.mtimeMs;
-            bestId = f.replace(".db", "");
-          }
-        } catch { /* ignore */ }
-      }
-
-      return bestId;
+      return fileStats[0]?.name.replace(".db", "") ?? null;
     } catch {
       return null;
     }
   }
 
   private async computeContextUsage(): Promise<void> {
-    if (!this.activeTranscriptPath || !fs.existsSync(this.activeTranscriptPath)) return;
+    if (this.isComputing || !this.activeTranscriptPath || !fs.existsSync(this.activeTranscriptPath)) return;
+    this.isComputing = true;
 
     try {
       const content = await fs.promises.readFile(this.activeTranscriptPath, "utf8");
       const lines = content.split("\n").filter(Boolean);
       if (lines.length === 0) return;
 
-      let lastCheckpointIdx = -1;
-      let detectedModel = this.activeModel;
+      if (this.lastProcessedPath !== this.activeTranscriptPath || lines.length < this.cachedLineTokens.length) {
+        this.cachedLineTokens = [];
+        this.cachedRunningTokens = BASE_SYSTEM_PROMPT_TOKENS;
+        this.cachedInitialPrompt = "";
+        this.lastProcessedLineCount = 0;
+        this.lastProcessedPath = this.activeTranscriptPath;
+      }
 
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        if (!line) continue;
-        if (line.includes("CHECKPOINT") || line.includes("The earlier parts of this conversation have been truncated")) {
-          try {
-            const obj = JSON.parse(line) as { type?: string; content?: string };
-            if (obj.type === "CHECKPOINT" || (obj.content && obj.content.includes("CHECKPOINT"))) {
-              lastCheckpointIdx = i;
+      let detectedModel = this.activeModel;
+      let initialPrompt = this.cachedInitialPrompt;
+
+      if (!initialPrompt && lines[0]) {
+        try {
+          const firstObj = JSON.parse(lines[0]) as { content?: string };
+          if (firstObj.content) {
+            const reqMatch = firstObj.content.match(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/i);
+            if (reqMatch?.[1]) {
+              initialPrompt = reqMatch[1].trim().replace(/[\r\n]+/g, " ").slice(0, 75);
+              this.cachedInitialPrompt = initialPrompt;
             }
-          } catch { /* ignore */ }
+          }
+        } catch { /* ignore */ }
+      }
+
+      const convTitle = this.activeConversationId ? extractAntigravityTitle(this.activeConversationId, initialPrompt) : initialPrompt;
+
+      const startIdx = this.cachedLineTokens.length;
+      let runningContextTokens = this.cachedRunningTokens;
+
+      for (let i = startIdx; i < lines.length; i++) {
+        const line = lines[i];
+        if (!line) {
+          this.cachedLineTokens.push(0);
+          continue;
         }
 
-        const mMatch = line.match(/`Model Selection` from [^`\r\n]+? to ([^\r\n`]+)/i);
-        if (mMatch?.[1]) {
-          detectedModel = mMatch[1].trim().replace(/\.\s+No need to comment.*$/i, "").replace(/\.+$/, "").trim();
-        } else {
-          const mMatch2 = line.match(/"model":\s*"([^"]+)"/i);
-          if (mMatch2?.[1]) detectedModel = mMatch2[1].trim();
+        try {
+          const obj = JSON.parse(line) as {
+            type?: string;
+            source?: string;
+            content?: string;
+            thinking?: string;
+            tool_calls?: unknown[];
+          };
+
+          if (obj.source !== "MODEL" && obj.content) {
+            const mMatch = obj.content.match(/`?Model Selection`? from [^`\r\n]+? to ([^\r\n`]+?)(?:\.\s+No need|\.\s*$|$)/i);
+            if (mMatch?.[1]) {
+              const parsed = formatDynamicModelName(mMatch[1]);
+              if (parsed) detectedModel = parsed;
+            }
+          }
+
+          if (obj.type === "CHECKPOINT" || obj.content?.includes("{{ CHECKPOINT")) {
+            const cpTokens = countBpeTokens(obj.content || "");
+            runningContextTokens = cpTokens;
+            this.cachedLineTokens.push(cpTokens);
+          } else {
+            let lineTokens = countBpeTokens(obj.content || "");
+            if (obj.thinking) lineTokens += countBpeTokens(obj.thinking);
+            if (Array.isArray(obj.tool_calls)) lineTokens += countBpeTokens(JSON.stringify(obj.tool_calls));
+            runningContextTokens += lineTokens;
+            this.cachedLineTokens.push(lineTokens);
+          }
+        } catch {
+          this.cachedLineTokens.push(0);
         }
       }
 
-      const activeLines = lastCheckpointIdx >= 0 ? lines.slice(lastCheckpointIdx) : lines;
-      let payloadText = "";
+      this.cachedRunningTokens = runningContextTokens;
 
-      for (const line of activeLines) {
-        try {
-          const obj = JSON.parse(line) as {
-            content?: string;
-            thinking?: string;
-            tool_calls?: Array<{ name?: string; arguments?: unknown }>;
-          };
-          if (typeof obj.content === "string") payloadText += `${obj.content}\n`;
-          if (typeof obj.thinking === "string") payloadText += `${obj.thinking}\n`;
-          if (Array.isArray(obj.tool_calls)) {
-            for (const tc of obj.tool_calls) {
-              payloadText += `${tc.name || ""}: ${JSON.stringify(tc.arguments || {})}\n`;
-            }
+      // Record incremental turns for stats
+      if (this.statsManager && this.activeConversationId) {
+        const statsStartIdx = this.lastProcessedPath === this.activeTranscriptPath ? this.lastProcessedLineCount : 0;
+        if (lines.length > statsStartIdx) {
+          let activePromptText = initialPrompt;
+          let activePromptTime = Date.now();
+
+          // Scan backwards to find the latest active user prompt
+          for (let i = lines.length - 1; i >= 0; i--) {
+            const l = lines[i];
+            if (!l) continue;
+            try {
+              const obj = JSON.parse(l) as { source?: string; content?: string; created_at?: string };
+              if (obj.source === "USER_INPUT" || obj.source === "USER_EXPLICIT") {
+                if (obj.created_at) activePromptTime = Date.parse(obj.created_at);
+                if (obj.content) {
+                  const req = obj.content.match(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/i);
+                  activePromptText = (req?.[1] || obj.content).trim().replace(/[\r\n]+/g, " ").slice(0, 80);
+                }
+                break;
+              }
+            } catch { /* ignore */ }
           }
-        } catch {
-          payloadText += `${line}\n`;
+
+          let currentOutTurn = 0;
+          let currentTurnCount = 0;
+
+          for (let i = statsStartIdx; i < lines.length; i++) {
+            const l = lines[i];
+            if (!l) continue;
+            try {
+              const obj = JSON.parse(l) as {
+                type?: string;
+                source?: string;
+                content?: string;
+                thinking?: string;
+                tool_calls?: unknown[];
+              };
+
+              if (obj.type === "PLANNER_RESPONSE" || (!obj.type && obj.source === "MODEL")) {
+                currentTurnCount += 1;
+                let outTurn = countBpeTokens(obj.content || "");
+                if (obj.thinking) outTurn += countBpeTokens(obj.thinking);
+                if (Array.isArray(obj.tool_calls)) outTurn += countBpeTokens(JSON.stringify(obj.tool_calls));
+                currentOutTurn += outTurn;
+              }
+            } catch { /* ignore */ }
+          }
+
+          if (currentTurnCount > 0) {
+            const dateObj = new Date(activePromptTime);
+            const dateStr = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, "0")}-${String(dateObj.getDate()).padStart(2, "0")}`;
+            const turnInp = runningContextTokens;
+            const turnHit = Math.max(0, turnInp - BASE_SYSTEM_PROMPT_TOKENS);
+            const turnMiss = Math.min(turnInp, BASE_SYSTEM_PROMPT_TOKENS);
+
+            this.statsManager.recordTokens(
+              dateStr,
+              detectedModel,
+              this.activeConversationId,
+              convTitle,
+              "",
+              turnInp * currentTurnCount,
+              currentOutTurn,
+              turnHit * currentTurnCount,
+              turnMiss * currentTurnCount,
+              activePromptText,
+              activePromptTime,
+              currentTurnCount,
+            );
+          }
+
+          this.lastProcessedLineCount = lines.length;
+          this.lastProcessedPath = this.activeTranscriptPath;
         }
       }
 
       this.activeModel = detectedModel;
-      const baseSystemTokens = Math.round(BASE_SYSTEM_PROMPT_CHARS / 3.8);
-      const activePayloadTokens = countBpeTokens(payloadText);
-      const totalTokens = activePayloadTokens + baseSystemTokens;
       const limit = this.getModelContextLimit(this.activeModel);
 
       this.currentUsage = {
-        current: totalTokens,
+        current: runningContextTokens,
         limit,
         model: this.activeModel,
-        percent: limit > 0 ? Math.min(100, Math.round((totalTokens / limit) * 100)) : 0,
+        percent: limit > 0 ? Math.min(100, Math.round((runningContextTokens / limit) * 100)) : 0,
       };
 
       this.onContextChangeEmitter.fire(this.currentUsage);
-    } catch { /* ignore compute error */ }
+    } catch { /* ignore compute error */ } finally {
+      this.isComputing = false;
+    }
   }
 
   public dispose(): void {
@@ -301,6 +440,7 @@ export class UsageTracker {
       this.convDirWatcher.close();
       this.convDirWatcher = null;
     }
+    this.dbWorkspaceCache.clear();
     this.onContextChangeEmitter.dispose();
   }
 }
