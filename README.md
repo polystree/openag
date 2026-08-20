@@ -6,7 +6,7 @@
 
 ### Automatic multi-account quota pool and switcher for Google Antigravity
 
-[![Open VSX](https://img.shields.io/badge/Open_VSX-v1.2.0-fa6400?style=flat-square&logo=eclipseide&logoColor=white)](https://open-vsx.org/extension/polystree/openag)
+[![Open VSX](https://img.shields.io/badge/Open_VSX-v1.3.0-fa6400?style=flat-square&logo=eclipseide&logoColor=white)](https://open-vsx.org/extension/polystree/openag)
 [![License](https://img.shields.io/badge/License-MIT-00b4d8?style=flat-square)](LICENSE)
 [![Sponsor](https://img.shields.io/badge/Sponsor-Support_this_project-ff69b4?style=flat-square&logo=github-sponsors&logoColor=white)](https://github.com/sponsors/polystree)
 
@@ -24,7 +24,8 @@
 ## What It Does
 
 - **Auto Account Switching**: Automatically routes to the account with the highest available quota.
-- **Interactive Token Statistics**: Visual consumption analytics across time horizons (Today, 7D, 4W, 12M) with prompt, completion, and cache breakdown.
+- **Accurate Token Statistics**: Visual consumption analytics across time horizons (Today, 7D, 4W, 12M) with prompt, completion, and cache breakdown extracted directly from local history.
+- **Multi-Model Session Tracking**: Accurately credits and tracks distinct models when switching models mid-conversation.
 - **Context Tracking**: Live context window tracking.
 - **Auto-Run Terminal Fix**: Fixes Antigravity's "Always Proceed" terminal policy so commands execute automatically without asking to confirm every time.
 - **Email Privacy Mode**: Toggle between full email addresses and anonymized account identifiers.
