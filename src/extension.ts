@@ -49,7 +49,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionExports {
   logManager = new LogManager(context);
   statsManager = new StatsManager(context, log);
   usageTracker = new UsageTracker(statsManager);
-  tokenManager = new TokenManager(context, log);
+  tokenManager = new TokenManager(context, log, usageTracker);
   statusBar = new StatusBarHUD(context);
 
   quotaMonitor = new QuotaMonitor(
@@ -83,7 +83,12 @@ export function activate(context: vscode.ExtensionContext): ExtensionExports {
     }),
   );
 
-  usageTracker.onContextChange((ctx) => statusBar?.updateContext(ctx));
+  usageTracker.onContextChange((ctx) => {
+    statusBar?.updateContext(ctx);
+    if (tokenManager && quotaMonitor) {
+      void tokenManager.autoSelectHighestQuota(quotaMonitor.getAllQuotas(), `model ${ctx.model}`, ctx.model);
+    }
+  });
   logManager.onLog(() => webviewProvider?.refresh());
   statsManager.onStatsChange(() => webviewProvider?.refresh());
 
@@ -187,30 +192,6 @@ export function activate(context: vscode.ExtensionContext): ExtensionExports {
       await syncIdeAuth();
       await quotaMonitor?.pollAllAccounts();
       vscode.window.showInformationMessage("OpenAG: Quotas refreshed");
-    }),
-    vscode.commands.registerCommand("openag.switchAccount", async () => {
-      const accounts = tokenManager?.getAccounts() ?? [];
-      if (!accounts.length) {
-        void vscode.window.showInformationMessage("No accounts in OpenAG. Click Add Account first.");
-        return;
-      }
-      const quotas = quotaMonitor?.getAllQuotas() ?? {};
-      const activeEmail = tokenManager?.getActiveEmail() ?? "";
-      const items = accounts.map((a) => {
-        const q = quotas[a.email.toLowerCase()];
-        const geminiPct = q?.families?.find((f) => f.key === "gemini")?.percent ?? 100;
-        const claudePct = q?.families?.find((f) => f.key === "claude")?.percent ?? 100;
-        return {
-          label: `${a.email.toLowerCase() === activeEmail.toLowerCase() ? "✓ " : ""}${a.email}`,
-          description: `[${a.tier.toUpperCase()}] Gemini: ${geminiPct}% | Claude: ${claudePct}%`,
-          accountEmail: a.email,
-        };
-      });
-      const picked = await vscode.window.showQuickPick(items, { placeHolder: "Select active Google account for Antigravity" });
-      if (picked) {
-        await tokenManager?.selectAccount(picked.accountEmail);
-        void quotaMonitor?.pollActiveAccount();
-      }
     }),
     vscode.commands.registerCommand("openag.applyAutoRunFix", async () => {
       const res = AutoRunPatcher.apply();

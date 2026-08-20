@@ -102,11 +102,28 @@ export class StatusBarHUD {
     const icon = this.isRotating ? "$(sync~spin)" : "$(sparkle)";
     const families = this.currentQuota?.families || [];
     const quotaSummary = families.map((f) => `${f.limit5h?.percent ?? f.percent}%`).join(" | ");
-    const minPct = families.length > 0 ? Math.min(...families.map((f) => f.limit5h?.percent ?? f.percent)) : 100;
+    const activeModel = (this.currentContext?.model || "").toLowerCase();
+    const activeFam =
+      activeModel.includes("claude") ||
+      activeModel.includes("sonnet") ||
+      activeModel.includes("opus") ||
+      activeModel.includes("haiku") ||
+      activeModel.includes("gpt") ||
+      activeModel.includes("oss")
+        ? "claude"
+        : activeModel.includes("gemini")
+          ? "gemini"
+          : null;
+    const targetFamily = activeFam ? families.find((f) => f.key === activeFam) : null;
+    const effectivePct = targetFamily
+      ? Math.min(targetFamily.limit5h?.percent ?? targetFamily.percent ?? 100, targetFamily.limitWeekly?.percent ?? 100)
+      : families.length > 0
+        ? Math.min(...families.map((f) => Math.min(f.limit5h?.percent ?? f.percent, f.limitWeekly?.percent ?? 100)))
+        : 100;
     const ctxStr = this.currentContext?.limit ? ` [${fmtTokens(this.currentContext.current)}/${fmtTokens(this.currentContext.limit)}]` : "";
 
     this.item.text = `${icon} ${tierBadge}${quotaSummary ? ` (${quotaSummary})` : ""}${ctxStr}`;
-    this.item.backgroundColor = minPct < 20 ? new vscode.ThemeColor("statusBarItem.errorBackground") : minPct < 40 ? new vscode.ThemeColor("statusBarItem.warningBackground") : undefined;
+    this.item.backgroundColor = effectivePct < 20 ? new vscode.ThemeColor("statusBarItem.errorBackground") : effectivePct < 40 ? new vscode.ThemeColor("statusBarItem.warningBackground") : undefined;
 
     const md = new vscode.MarkdownString(`$(account) **Active Account**: \`${this.currentEmail}\` [${tierBadge}]\n\n`, true);
     md.isTrusted = true;

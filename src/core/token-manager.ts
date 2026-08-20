@@ -1,11 +1,31 @@
 import * as crypto from "node:crypto";
 import * as vscode from "vscode";
 import type { Account, AccountQuota, AccountStatus, AccountTier, EffectiveQuota, OAuthTokens, OpenAGConfig } from "../types.js";
+import type { UsageTracker } from "./usage-tracker.js";
 import { USSBridge } from "./uss-bridge.js";
 
 const KEY_ACCOUNTS = "openag.accounts.v1";
 const KEY_ACTIVE = "openag.active_account.v1";
 const KEY_CONFIG = "openag.config.v1";
+
+function resolveModelFamily(modelName?: string): "gemini" | "claude" | "other" {
+  if (!modelName) return "other";
+  const lower = modelName.toLowerCase();
+  if (
+    lower.includes("claude") ||
+    lower.includes("sonnet") ||
+    lower.includes("opus") ||
+    lower.includes("haiku") ||
+    lower.includes("gpt") ||
+    lower.includes("oss")
+  ) {
+    return "claude";
+  }
+  if (lower.includes("gemini")) {
+    return "gemini";
+  }
+  return "other";
+}
 
 export class TokenManager {
   private accounts: Account[] = [];
@@ -21,6 +41,7 @@ export class TokenManager {
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly log: (msg: string) => void,
+    private readonly usageTracker?: UsageTracker,
   ) {}
 
   public async initialize(): Promise<void> {
@@ -179,14 +200,42 @@ export class TokenManager {
     return target;
   }
 
-  public getEffectiveQuota(email: string, quotas: Record<string, AccountQuota>): EffectiveQuota {
+  public getEffectiveQuota(email: string, quotas: Record<string, AccountQuota>, targetModel?: string): EffectiveQuota {
     const q = quotas[email.toLowerCase()];
     if (!q?.families || q.families.length === 0) return { percent: -1, resetTs: Infinity };
+
+    const modelName = targetModel || this.usageTracker?.getActiveModel() || "";
+    if (modelName) {
+      if (q.models && q.models.length > 0) {
+        const lowerModel = modelName.toLowerCase();
+        const directModel = q.models.find((m) => m.name.toLowerCase() === lowerModel);
+        if (directModel) {
+          const resetTs = directModel.resetTime ? Date.parse(directModel.resetTime) : Infinity;
+          return { percent: directModel.percent, resetTs: Number.isNaN(resetTs) ? Infinity : resetTs };
+        }
+      }
+
+      const famKey = resolveModelFamily(modelName);
+      if (famKey !== "other") {
+        const fam = q.families.find((f) => f.key === famKey);
+        if (fam) {
+          const p5h = fam.limit5h?.percent ?? fam.percent ?? 100;
+          const pWk = fam.limitWeekly?.percent ?? 100;
+          const pct = Math.min(p5h, pWk);
+          const resetStr = fam.limit5h?.resetTime ?? fam.resetTime ?? fam.limitWeekly?.resetTime;
+          const resetTs = resetStr ? Date.parse(resetStr) : Infinity;
+          return { percent: pct, resetTs: Number.isNaN(resetTs) ? Infinity : resetTs };
+        }
+      }
+    }
+
     let minPct = 100, minResetTs = Infinity;
     for (const f of q.families) {
-      const pct = f.limit5h?.percent ?? f.percent ?? 100;
+      const p5h = f.limit5h?.percent ?? f.percent ?? 100;
+      const pWk = f.limitWeekly?.percent ?? 100;
+      const pct = Math.min(p5h, pWk);
       minPct = Math.min(minPct, pct);
-      const resetTime = f.limit5h?.resetTime ?? f.resetTime;
+      const resetTime = f.limit5h?.resetTime ?? f.resetTime ?? f.limitWeekly?.resetTime;
       if (resetTime) {
         const ts = Date.parse(resetTime);
         if (!Number.isNaN(ts) && ts < minResetTs) minResetTs = ts;
@@ -195,20 +244,21 @@ export class TokenManager {
     return { percent: minPct, resetTs: minResetTs };
   }
 
-  public async autoSelectHighestQuota(quotas: Record<string, AccountQuota>, reason?: string): Promise<Account | null> {
+  public async autoSelectHighestQuota(quotas: Record<string, AccountQuota>, reason?: string, targetModel?: string): Promise<Account | null> {
     if (!this.isExtensionEnabled() || !this.isRotationEnabled() || this.accounts.length <= 1) return null;
     const available = this.accounts.filter((a) => a.status !== "disabled");
     if (available.length <= 1) return null;
 
+    const model = targetModel || this.usageTracker?.getActiveModel() || "Gemini 3.7 Flash High";
     const activeEmail = this.activeEmail.toLowerCase();
-    const activeInfo = this.getEffectiveQuota(activeEmail, quotas);
+    const activeInfo = this.getEffectiveQuota(activeEmail, quotas, model);
 
     let bestAcc: Account | null = null;
     let bestPct = -1;
     let bestResetTs = Infinity;
 
     for (const acc of available) {
-      const info = this.getEffectiveQuota(acc.email, quotas);
+      const info = this.getEffectiveQuota(acc.email, quotas, model);
       if (info.percent < 0) continue;
       if (info.percent > bestPct || (info.percent === bestPct && info.resetTs < bestResetTs)) {
         bestAcc = acc;
@@ -220,7 +270,7 @@ export class TokenManager {
     if (!bestAcc || bestPct <= 0 || bestAcc.email.toLowerCase() === activeEmail || bestPct <= activeInfo.percent) {
       return null;
     }
-    this.log(`[AutoRotate] Switching to highest-quota account ${bestAcc.email} (${bestPct}%) from ${this.activeEmail} (${activeInfo.percent}%) [${reason || "auto"}]`);
+    this.log(`[AutoRotate] Switching to highest-quota account ${bestAcc.email} (${bestPct}%) from ${this.activeEmail} (${activeInfo.percent}%) [model: ${model}, reason: ${reason || "auto"}]`);
     return this.selectAccount(bestAcc.email);
   }
 

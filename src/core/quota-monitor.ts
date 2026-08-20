@@ -244,7 +244,8 @@ export class QuotaMonitor {
 
   private checkAutoRotation(email: string): void {
     if (!this.tokenManager.isExtensionEnabled() || !this.tokenManager.isRotationEnabled()) return;
-    void this.tokenManager.autoSelectHighestQuota(this.getAllQuotas(), `quota update on ${email}`);
+    const model = this.usageTracker?.getActiveModel();
+    void this.tokenManager.autoSelectHighestQuota(this.getAllQuotas(), `quota update on ${email}`, model);
   }
 
   public async pollActiveAccount(): Promise<void> {
@@ -257,13 +258,21 @@ export class QuotaMonitor {
     const accounts = this.tokenManager.getAccounts().filter((acc) => acc.status !== "disabled");
     await Promise.allSettled(accounts.map((acc) => this.fetchAccountQuota(acc, true)));
     if (this.tokenManager.isExtensionEnabled() && this.tokenManager.isRotationEnabled()) {
-      void this.tokenManager.autoSelectHighestQuota(this.getAllQuotas(), "poll all accounts completion");
+      const model = this.usageTracker?.getActiveModel();
+      void this.tokenManager.autoSelectHighestQuota(this.getAllQuotas(), "poll all accounts completion", model);
     }
   }
 
   private categorizeFamily(name: string): "gemini" | "claude" | "other" {
     const lower = name.toLowerCase();
-    if (lower.includes("claude")) return "claude";
+    if (
+      lower.includes("claude") ||
+      lower.includes("sonnet") ||
+      lower.includes("opus") ||
+      lower.includes("haiku") ||
+      lower.includes("gpt") ||
+      lower.includes("oss")
+    ) return "claude";
     if (lower.includes("gemini")) return "gemini";
     return "other";
   }

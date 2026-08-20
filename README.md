@@ -6,7 +6,7 @@
 
 ### Automatic multi-account quota pool and switcher for Google Antigravity
 
-[![Open VSX](https://img.shields.io/badge/Open_VSX-v1.3.0-fa6400?style=flat-square&logo=eclipseide&logoColor=white)](https://open-vsx.org/extension/polystree/openag)
+[![Open VSX](https://img.shields.io/badge/Open_VSX-v1.3.1-fa6400?style=flat-square&logo=eclipseide&logoColor=white)](https://open-vsx.org/extension/polystree/openag)
 [![License](https://img.shields.io/badge/License-MIT-00b4d8?style=flat-square)](LICENSE)
 [![Sponsor](https://img.shields.io/badge/Sponsor-Support_this_project-ff69b4?style=flat-square&logo=github-sponsors&logoColor=white)](https://github.com/sponsors/polystree)
 
@@ -42,7 +42,7 @@
 3. Click **+ Add** to sign in with additional accounts in your browser.
 4. Keep coding as usual, and OpenAG will automatically swap accounts for you to the one with the most quota left.
 
-You can also click the status bar item anytime to see detailed quotas or switch accounts manually.
+You can also click the status bar item anytime to open the management panel and inspect detailed quotas.
 
 ---
 
@@ -50,7 +50,6 @@ You can also click the status bar item anytime to see detailed quotas or switch 
 
 - `OpenAG: Open Management Panel`: Open the sidebar view.
 - `OpenAG: Add Google Account`: Add another Google account.
-- `OpenAG: Switch Active Account`: Pick an account manually from the list.
 - `OpenAG: Refresh All Quotas`: Update quota balances immediately.
 - `OpenAG: Apply Auto-Run Terminal Fix`: Patch Antigravity terminal auto-execution.
 - `OpenAG: Revert Auto-Run Terminal Fix`: Restore original Antigravity files.

@@ -90,13 +90,49 @@ describe("AutoRunPatcher modular patch transformations", () => {
 });
 
 describe("TokenManager Quota Selection logic", () => {
-  function getEffectiveQuota(families: Array<{ percent: number; limit5h?: { percent: number; resetTime?: string }; resetTime?: string }>): EffectiveQuota {
+  function resolveModelFamily(modelName?: string): "gemini" | "claude" | "other" {
+    if (!modelName) return "other";
+    const lower = modelName.toLowerCase();
+    if (
+      lower.includes("claude") ||
+      lower.includes("sonnet") ||
+      lower.includes("opus") ||
+      lower.includes("haiku") ||
+      lower.includes("gpt") ||
+      lower.includes("oss")
+    ) return "claude";
+    if (lower.includes("gemini")) return "gemini";
+    return "other";
+  }
+
+  function getEffectiveQuota(
+    families: Array<{ key?: string; percent: number; limit5h?: { percent: number; resetTime?: string }; limitWeekly?: { percent: number; resetTime?: string }; resetTime?: string }>,
+    targetModel?: string,
+  ): EffectiveQuota {
     if (!families || families.length === 0) return { percent: -1, resetTs: Infinity };
+
+    if (targetModel) {
+      const famKey = resolveModelFamily(targetModel);
+      if (famKey !== "other") {
+        const fam = families.find((f) => f.key === famKey);
+        if (fam) {
+          const p5h = fam.limit5h?.percent ?? fam.percent ?? 100;
+          const pWk = fam.limitWeekly?.percent ?? 100;
+          const pct = Math.min(p5h, pWk);
+          const resetStr = fam.limit5h?.resetTime ?? fam.resetTime ?? fam.limitWeekly?.resetTime;
+          const resetTs = resetStr ? Date.parse(resetStr) : Infinity;
+          return { percent: pct, resetTs: Number.isNaN(resetTs) ? Infinity : resetTs };
+        }
+      }
+    }
+
     let minPct = 100, minResetTs = Infinity;
     for (const f of families) {
-      const pct = f.limit5h?.percent ?? f.percent ?? 100;
+      const p5h = f.limit5h?.percent ?? f.percent ?? 100;
+      const pWk = f.limitWeekly?.percent ?? 100;
+      const pct = Math.min(p5h, pWk);
       minPct = Math.min(minPct, pct);
-      const resetTime = f.limit5h?.resetTime ?? f.resetTime;
+      const resetTime = f.limit5h?.resetTime ?? f.resetTime ?? f.limitWeekly?.resetTime;
       if (resetTime) {
         const ts = Date.parse(resetTime);
         if (!Number.isNaN(ts) && ts < minResetTs) minResetTs = ts;
@@ -105,7 +141,37 @@ describe("TokenManager Quota Selection logic", () => {
     return { percent: minPct, resetTs: minResetTs };
   }
 
-  test("correctly computes minimum remaining quota across families", () => {
+  test("correctly computes effective quota tied to Gemini when Gemini model is active", () => {
+    const families = [
+      { key: "gemini", label: "Gemini", percent: 80, limit5h: { percent: 80, resetTime: "2026-08-17T22:00:00Z" } },
+      { key: "claude", label: "Claude", percent: 0, limit5h: { percent: 0, resetTime: "2026-08-17T23:00:00Z" } },
+    ];
+    const res = getEffectiveQuota(families, "Gemini 3.7 Flash High");
+    expect(res.percent).toBe(80);
+    expect(res.resetTs).toBe(Date.parse("2026-08-17T22:00:00Z"));
+  });
+
+  test("correctly computes effective quota tied to Claude when Claude model is active", () => {
+    const families = [
+      { key: "gemini", label: "Gemini", percent: 100, limit5h: { percent: 100, resetTime: "2026-08-17T22:00:00Z" } },
+      { key: "claude", label: "Claude", percent: 30, limit5h: { percent: 30, resetTime: "2026-08-17T23:00:00Z" } },
+    ];
+    const res = getEffectiveQuota(families, "Claude 3.7 Sonnet");
+    expect(res.percent).toBe(30);
+    expect(res.resetTs).toBe(Date.parse("2026-08-17T23:00:00Z"));
+  });
+
+  test("correctly computes effective quota tied to Claude when GPT-OSS model is active", () => {
+    const families = [
+      { key: "gemini", label: "Gemini", percent: 90, limit5h: { percent: 90, resetTime: "2026-08-17T22:00:00Z" } },
+      { key: "claude", label: "Claude", percent: 25, limit5h: { percent: 25, resetTime: "2026-08-17T23:00:00Z" } },
+    ];
+    const res = getEffectiveQuota(families, "GPT OSS 120B");
+    expect(res.percent).toBe(25);
+    expect(res.resetTs).toBe(Date.parse("2026-08-17T23:00:00Z"));
+  });
+
+  test("correctly computes minimum remaining quota across families when model is unspecified", () => {
     const families = [
       { key: "gemini", label: "Gemini", percent: 80, limit5h: { percent: 80, resetTime: "2026-08-17T22:00:00Z" } },
       { key: "claude", label: "Claude", percent: 45, limit5h: { percent: 45, resetTime: "2026-08-17T23:00:00Z" } },
