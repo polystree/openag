@@ -93,4 +93,3 @@ export class LogManager {
     this.onLogEmitter.dispose();
   }
 }
-

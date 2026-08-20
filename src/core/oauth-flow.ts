@@ -28,6 +28,7 @@ async function requestToken(params: URLSearchParams): Promise<OAuthTokens> {
     body: params.toString(),
   });
   if (!res.ok) throw new Error(`Token request failed HTTP ${res.status}: ${await res.text()}`);
+  // SAFETY: Google OAuth token endpoint response payload
   const data = (await res.json()) as { access_token: string; expires_in?: number; refresh_token?: string; token_type?: string };
   return {
     accessToken: data.access_token,
@@ -40,6 +41,7 @@ async function requestToken(params: URLSearchParams): Promise<OAuthTokens> {
 async function fetchUserEmail(accessToken: string): Promise<string> {
   const res = await fetch(GOOGLE_USERINFO_URL, { headers: { Authorization: `Bearer ${accessToken}` } });
   if (!res.ok) throw new Error(`Failed to fetch user email (HTTP ${res.status})`);
+  // SAFETY: Google userinfo endpoint returns profile with email string
   const data = (await res.json()) as { email?: string };
   if (!data.email) throw new Error("No email found in profile");
   return data.email;
@@ -75,7 +77,9 @@ export const OAuthFlow = {
             return;
           }
 
-          const redirectUri = `http://127.0.0.1:${(server?.address() as { port: number })?.port}/oauth2callback`;
+          // SAFETY: HTTP server address on TCP socket returns AddressInfo object with port
+          const addr = server?.address() as { port: number } | null;
+          const redirectUri = `http://127.0.0.1:${addr?.port || 0}/oauth2callback`;
           const tokens = await requestToken(new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri: redirectUri }));
           const email = await fetchUserEmail(tokens.accessToken);
 
@@ -93,7 +97,9 @@ export const OAuthFlow = {
       });
 
       server.listen(0, "127.0.0.1", () => {
-        const port = (server?.address() as { port: number })?.port;
+        // SAFETY: HTTP server address on TCP socket returns AddressInfo object with port
+        const addr = server?.address() as { port: number } | null;
+        const port = addr?.port || 0;
         const redirectUri = `http://127.0.0.1:${port}/oauth2callback`;
         const creds = USSBridge.getClientCredentials();
         const authParams = new URLSearchParams({

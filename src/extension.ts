@@ -17,21 +17,34 @@ let statusBar: StatusBarHUD | null = null;
 let webviewProvider: WebviewProvider | null = null;
 let logManager: LogManager | null = null;
 let usageTracker: UsageTracker | null = null;
+let statsManager: StatsManager | null = null;
+
+function getLogCategory(msg: string): "ROTATION" | "QUOTA" | "USS" | "AUTH" | "SYSTEM" {
+  if (msg.includes("AutoRotate") || msg.includes("ROTATION")) return "ROTATION";
+  if (msg.includes("Quota") || msg.includes("QUOTA")) return "QUOTA";
+  if (msg.includes("IDE Sync") || msg.includes("USS")) return "USS";
+  if (msg.includes("AUTH") || msg.includes("Authorized") || msg.includes("Login") || msg.includes("token")) return "AUTH";
+  return "SYSTEM";
+}
+
+function getLogLevel(msg: string): "info" | "warn" | "error" | "rotate" {
+  const lower = msg.toLowerCase();
+  if (lower.includes("error") || lower.includes("fail")) return "error";
+  if (msg.includes("AutoRotate")) return "rotate";
+  return "info";
+}
 
 const log = (msg: string): void => {
   outputChannel?.appendLine(`[${new Date().toISOString().slice(11, 23)}] ${msg}`);
-  const cat = msg.includes("AutoRotate") || msg.includes("ROTATION") ? "ROTATION"
-    : msg.includes("Quota") || msg.includes("QUOTA") ? "QUOTA"
-    : msg.includes("IDE Sync") || msg.includes("USS") ? "USS"
-    : msg.includes("AUTH") || msg.includes("Authorized") || msg.includes("Login") || msg.includes("token") ? "AUTH"
-    : "SYSTEM";
-  const lvl = msg.toLowerCase().includes("error") || msg.toLowerCase().includes("fail") ? "error" : msg.includes("AutoRotate") ? "rotate" : "info";
-  logManager?.addLog(lvl, cat, msg);
+  logManager?.addLog(getLogLevel(msg), getLogCategory(msg), msg);
 };
 
-let statsManager: StatsManager | null = null;
+export interface ExtensionExports {
+  tokenManager: TokenManager;
+  quotaMonitor: QuotaMonitor;
+}
 
-export function activate(context: vscode.ExtensionContext): unknown {
+export function activate(context: vscode.ExtensionContext): ExtensionExports {
   outputChannel = vscode.window.createOutputChannel("OpenAG");
   logManager = new LogManager(context);
   statsManager = new StatsManager(context, log);
@@ -52,7 +65,7 @@ export function activate(context: vscode.ExtensionContext): unknown {
     context,
   );
 
-  webviewProvider = new WebviewProvider(context, tokenManager, quotaMonitor, log, logManager, statsManager);
+  webviewProvider = new WebviewProvider(context, tokenManager, quotaMonitor, log, logManager, statsManager, usageTracker);
 
   context.subscriptions.push(
     logManager,
@@ -115,10 +128,10 @@ export function activate(context: vscode.ExtensionContext): unknown {
       quotaMonitor?.initialize();
       const activeAcc = tokenManager?.getActiveAccount();
       const initQuota = activeAcc && quotaMonitor ? quotaMonitor.getQuota(activeAcc.email) : null;
-      statusBar?.updateAccount(tokenManager?.getActiveEmail() || "", activeAcc?.tier || "unknown", tokenManager?.isExtensionEnabled() || true, initQuota);
+      statusBar?.updateAccount(tokenManager?.getActiveEmail() || "", activeAcc?.tier || "unknown", tokenManager?.isExtensionEnabled() ?? true, initQuota);
       webviewProvider?.refresh();
       await syncIdeAuth();
-    } catch (err) {
+    } catch (err: unknown) {
       log(`OpenAG background init error: ${err instanceof Error ? err.message : String(err)}`);
     }
   })();
@@ -222,7 +235,6 @@ export function activate(context: vscode.ExtensionContext): unknown {
       webviewProvider?.refresh();
     }),
   );
-
 
   log("OpenAG activated successfully.");
   return { tokenManager, quotaMonitor };

@@ -1,59 +1,51 @@
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import type { ConversationStats, DayTokenStats, HourlyTokenStats, MonthTokenStats, RequestStats, TokenBucket, TokenStatsRegistry, WeekTokenStats } from "../types.js";
+import { aggregateBlockTokens, readGenMetadata } from "./gen-metadata-reader.js";
+import { CONV_DIR, loadSqlite } from "./sqlite-utils.js";
 
 const STATS_KEY = "openag_token_stats_v8";
-const BASE_SYSTEM_PROMPT_TOKENS = 4200;
-const CONV_DIR = path.join(os.homedir(), ".gemini", "antigravity-ide", "conversations");
 const SEVEN_DAYS = 7 * 24 * 60 * 60 * 1000;
 
-interface SqliteDb {
-  prepare: (sql: string) => { all: (param?: unknown) => Array<{ idx: number; step_payload?: Uint8Array | Buffer }> };
-  close?: () => void;
+function parseTitleFromBuffer(buf: Buffer): string | null {
+  for (let i = 0; i < buf.length - 10; i++) {
+    if (buf[i] !== 0x22) continue;
+    const len = buf[i + 1];
+    if (!len || len < 3 || len > 80 || i + 2 + len >= buf.length || buf[i + 2 + len] !== 0x48) continue;
+    const cand = buf.subarray(i + 2, i + 2 + len).toString("utf8").trim();
+    if (
+      cand.length >= 3 &&
+      !cand.includes("sessionID") &&
+      !cand.includes("$") &&
+      !cand.includes("file:") &&
+      !cand.includes("{") &&
+      !cand.includes("=") &&
+      !cand.includes("return") &&
+      !cand.includes(";")
+    ) {
+      return cand;
+    }
+  }
+  return null;
 }
 
 export function extractAntigravityTitle(convId: string, fallbackPrompt = ""): string {
   const dbPath = path.join(CONV_DIR, `${convId}.db`);
   if (fs.existsSync(dbPath)) {
     try {
-      let sqlite: { DatabaseSync: new (p: string, opts?: { readOnly?: boolean; open?: boolean }) => SqliteDb } | null = null;
-      try {
-        sqlite = require("node:sqlite");
-      } catch {
-        sqlite = null;
-      }
+      const sqlite = loadSqlite();
 
-      if (sqlite?.DatabaseSync) {
+      if (sqlite) {
         const db = new sqlite.DatabaseSync(dbPath, { readOnly: true, open: true });
-        const rows = db.prepare("SELECT idx, step_payload FROM steps WHERE step_type = 23 ORDER BY idx ASC").all();
-        if (typeof db.close === "function") db.close();
+        const rows = db.prepare("SELECT idx, step_payload FROM steps WHERE step_type = 23 ORDER BY idx ASC").all<{ idx: number; step_payload?: Uint8Array | Buffer }>();
+        db.close();
 
         for (const r of rows) {
           if (!r.step_payload) continue;
-          const buf = Buffer.from(r.step_payload);
-          for (let i = 0; i < buf.length - 10; i++) {
-            if (buf[i] === 0x22) {
-              const len = buf[i + 1];
-              if (len && len >= 3 && len <= 80 && i + 2 + len < buf.length && buf[i + 2 + len] === 0x48) {
-                const cand = buf.subarray(i + 2, i + 2 + len).toString("utf8").trim();
-                if (
-                  cand.length >= 3 &&
-                  !cand.includes("sessionID") &&
-                  !cand.includes("$") &&
-                  !cand.includes("file:") &&
-                  !cand.includes("{") &&
-                  !cand.includes("=") &&
-                  !cand.includes("return") &&
-                  !cand.includes(";")
-                ) {
-                  return cand;
-                }
-              }
-            }
-          }
+          const found = parseTitleFromBuffer(Buffer.from(r.step_payload));
+          if (found) return found;
         }
       }
     } catch { /* ignore sqlite error */ }
@@ -68,7 +60,7 @@ export function extractAntigravityTitle(convId: string, fallbackPrompt = ""): st
 }
 
 export function formatDynamicModelName(raw: string): string {
-  if (!raw || typeof raw !== "string") return "";
+  if (!raw) return "";
   let s = raw.trim();
 
   // Strip prompt artifacts, model selection tags, and instructions
@@ -100,12 +92,21 @@ function createEmptyBucket(): TokenBucket {
 
 function addToBucket(
   target: TokenBucket,
-  add: { input?: number; output?: number; cacheHit?: number; cacheMiss?: number },
+  add: {
+    input?: number;
+    output?: number;
+    cacheHit?: number;
+    cacheMiss?: number;
+    inputTokens?: number;
+    outputTokens?: number;
+    cacheHitTokens?: number;
+    cacheMissTokens?: number;
+  },
 ): void {
-  const inp = add.input || 0;
-  const out = add.output || 0;
-  const hit = add.cacheHit || 0;
-  const mis = add.cacheMiss || (inp - hit > 0 ? inp - hit : 0);
+  const inp = add.input ?? add.inputTokens ?? 0;
+  const out = add.output ?? add.outputTokens ?? 0;
+  const hit = add.cacheHit ?? add.cacheHitTokens ?? 0;
+  const mis = add.cacheMiss ?? add.cacheMissTokens ?? Math.max(0, inp - hit);
   target.inputTokens += inp;
   target.outputTokens += out;
   target.cacheHitTokens += hit;
@@ -119,6 +120,149 @@ function getTodayString(): string {
   const month = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+export interface RequestBlock {
+  startLine: number;
+  endLine: number;
+  timestamp: number;
+  promptText: string;
+  turnCount: number;
+  detectedModel: string;
+  isFinished: boolean;
+}
+
+export interface ParsedTranscript {
+  detectedModel: string;
+  initialPrompt: string;
+  completedBlocks: RequestBlock[];
+  activeBlock: RequestBlock | null;
+  completedEndLine: number;
+}
+
+export function parseTranscriptLines(
+  lines: string[],
+  fallbackPrompt = "",
+  convTitle = "",
+): ParsedTranscript {
+  let detectedModel = "Gemini 3.7 Flash High";
+  let initialPrompt = fallbackPrompt;
+  const completedBlocks: RequestBlock[] = [];
+  let currentBlock: RequestBlock | null = null;
+  let completedEndLine = 0;
+
+  if (!initialPrompt && lines.length > 0 && lines[0]) {
+    try {
+      // SAFETY: Transcript JSON line parsing for initial prompt extraction
+      const firstObj = JSON.parse(lines[0]) as { content?: string };
+      if (firstObj.content) {
+        const reqMatch = firstObj.content.match(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/i);
+        if (reqMatch?.[1]) {
+          initialPrompt = reqMatch[1].trim().replace(/[\r\n]+/g, " ").slice(0, 75);
+        }
+      }
+    } catch { /* ignore */ }
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line) continue;
+
+    try {
+      // SAFETY: Transcript JSONL line structure with optional metadata fields
+      const obj = JSON.parse(line) as {
+        type?: string;
+        source?: string;
+        content?: string;
+        tool_calls?: unknown[];
+        created_at?: string;
+        status?: string;
+      };
+
+      if (obj.source !== "MODEL" && obj.content) {
+        const mMatch = obj.content.match(/`?Model Selection`? from [^`\r\n]+? to ([^\r\n`]+?)(?:\.\s+No need|\.\s*$|$)/i);
+        if (mMatch?.[1]) {
+          const parsed = formatDynamicModelName(mMatch[1]);
+          if (parsed) detectedModel = parsed;
+        }
+      }
+
+      if (obj.type === "CHECKPOINT" || obj.content?.includes("{{ CHECKPOINT")) {
+        continue;
+      }
+
+      if (obj.source === "USER_INPUT" || obj.source === "USER_EXPLICIT" || obj.type === "USER_INPUT") {
+        if (currentBlock && currentBlock.turnCount > 0) {
+          currentBlock.endLine = i;
+          currentBlock.isFinished = true;
+          completedBlocks.push(currentBlock);
+          completedEndLine = i;
+        }
+
+        const text = obj.content || "";
+        const req = text.match(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/i);
+        const pText = (req?.[1] || text).trim().replace(/[\r\n]+/g, " ").slice(0, 80);
+        const reqTime = obj.created_at ? Date.parse(obj.created_at) : Date.now();
+
+        currentBlock = {
+          startLine: i,
+          endLine: i + 1,
+          timestamp: reqTime,
+          promptText: pText || "User Prompt",
+          turnCount: 0,
+          detectedModel,
+          isFinished: false,
+        };
+      } else if (obj.type === "PLANNER_RESPONSE" || (!obj.type && obj.source === "MODEL")) {
+        const stepTime = obj.created_at ? Date.parse(obj.created_at) : Date.now();
+        if (!currentBlock) {
+          currentBlock = {
+            startLine: i,
+            endLine: i + 1,
+            timestamp: stepTime,
+            promptText: initialPrompt || convTitle || "Initial Request",
+            turnCount: 0,
+            detectedModel,
+            isFinished: false,
+          };
+        }
+
+        currentBlock.turnCount += 1;
+        currentBlock.detectedModel = detectedModel;
+        currentBlock.endLine = i + 1;
+
+        const hasToolCalls = Array.isArray(obj.tool_calls) && obj.tool_calls.length > 0;
+        const isRunning = obj.status === "RUNNING";
+        currentBlock.isFinished = !hasToolCalls && !isRunning;
+      } else {
+        if (obj.source !== "SYSTEM" && obj.type !== "CHECKPOINT") {
+          if (currentBlock) {
+            currentBlock.isFinished = false;
+            currentBlock.endLine = i + 1;
+          }
+        }
+      }
+    } catch { /* ignore */ }
+  }
+
+  let activeBlock: RequestBlock | null = null;
+  if (currentBlock) {
+    if (currentBlock.isFinished && currentBlock.turnCount > 0) {
+      currentBlock.endLine = lines.length;
+      completedBlocks.push(currentBlock);
+      completedEndLine = lines.length;
+    } else {
+      activeBlock = currentBlock;
+    }
+  }
+
+  return {
+    detectedModel,
+    initialPrompt,
+    completedBlocks,
+    activeBlock,
+    completedEndLine,
+  };
 }
 
 export class StatsManager {
@@ -142,10 +286,7 @@ export class StatsManager {
   public cleanupStaleStats(): void {
     const cutoff = Date.now() - SEVEN_DAYS;
     this.registry.requests = (this.registry.requests || []).filter((r) => (r.timestamp || 0) >= cutoff);
-    this.registry.requests.sort((a, b) => b.timestamp - a.timestamp);
-    if (this.registry.requests.length > 500) {
-      this.registry.requests = this.registry.requests.slice(0, 500);
-    }
+    this.pruneRequests();
     if (this.registry.conversations) {
       for (const [id, c] of Object.entries(this.registry.conversations)) {
         if (c && (c.lastActive || 0) < cutoff && (c.totalTokens || 0) === 0) {
@@ -168,10 +309,7 @@ export class StatsManager {
           existingIds.add(req.id);
         }
       }
-      this.registry.requests.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-      if (this.registry.requests.length > 500) {
-        this.registry.requests = this.registry.requests.slice(0, 500);
-      }
+      this.pruneRequests();
     }
 
     if (other.conversations) {
@@ -188,9 +326,20 @@ export class StatsManager {
           tc.inputTokens = Math.max(tc.inputTokens || 0, oc.inputTokens || 0);
           tc.outputTokens = Math.max(tc.outputTokens || 0, oc.outputTokens || 0);
           tc.cacheHitTokens = Math.max(tc.cacheHitTokens || 0, oc.cacheHitTokens || 0);
-          tc.cacheMissTokens = Math.max(tc.cacheMissTokens || 0, oc.cacheMissTokens || 0);
           if (oc.title && oc.title !== id.slice(0, 8)) tc.title = oc.title;
           if (oc.model && oc.model !== "Unknown Model") tc.model = oc.model;
+          if (oc.models) {
+            if (!tc.models) tc.models = {};
+            for (const [m, om] of Object.entries(oc.models)) {
+              if (!om) continue;
+              const tm = tc.models[m];
+              if (!tm) {
+                tc.models[m] = { ...om };
+              } else if (om.totalTokens > tm.totalTokens) {
+                tc.models[m] = { ...om };
+              }
+            }
+          }
         }
       }
     }
@@ -258,7 +407,6 @@ export class StatsManager {
     }
 
     const day = this.registry.days[date];
-    if (!day) return;
     addToBucket(day, { input: inputTokens, output: outputTokens, cacheHit: cacheHitTokens, cacheMiss: cacheMissTokens });
 
     if (!day.models[cleanModel]) day.models[cleanModel] = createEmptyBucket();
@@ -278,6 +426,7 @@ export class StatsManager {
         title,
         workspace: workspacePath || "",
         model: cleanModel,
+        models: {},
         turnCount: 0,
         lastActive: timestamp,
         ...createEmptyBucket(),
@@ -290,6 +439,19 @@ export class StatsManager {
       cStat.lastActive = Math.max(cStat.lastActive || 0, timestamp);
       if (cleanModel && cleanModel !== "Unknown Model") cStat.model = cleanModel;
       if (title && (!cStat.title || cStat.title === cid.slice(0, 8))) cStat.title = title;
+      if (!cStat.models) cStat.models = {};
+      if (cleanModel && cleanModel !== "Unknown Model") {
+        if (!cStat.models[cleanModel]) cStat.models[cleanModel] = createEmptyBucket();
+        const mBucket = cStat.models[cleanModel];
+        if (mBucket) {
+          addToBucket(mBucket, {
+            input: inputTokens,
+            output: outputTokens,
+            cacheHit: cacheHitTokens,
+            cacheMiss: cacheMissTokens,
+          });
+        }
+      }
       addToBucket(cStat, {
         input: inputTokens,
         output: outputTokens,
@@ -339,36 +501,25 @@ export class StatsManager {
     const models: Record<string, TokenBucket> = {};
 
     for (const h of hourly) {
-      addToBucket(bucket, {
-        input: h.inputTokens,
-        output: h.outputTokens,
-        cacheHit: h.cacheHitTokens,
-        cacheMiss: h.cacheMissTokens,
-      });
+      addToBucket(bucket, h);
       for (const [m, b] of Object.entries(h.models || {})) {
         if (!models[m]) models[m] = createEmptyBucket();
         const target = models[m];
-        if (target) {
-          addToBucket(target, {
-            input: b.inputTokens,
-            output: b.outputTokens,
-            cacheHit: b.cacheHitTokens,
-            cacheMiss: b.cacheMissTokens,
-          });
-        }
+        if (target) addToBucket(target, b);
       }
     }
 
     const dayRecord = this.registry.days[today];
-    const total = Math.max(bucket.totalTokens, dayRecord?.totalTokens || 0);
+    const isBucketLarger = bucket.totalTokens >= (dayRecord?.totalTokens || 0);
+    const chosen = isBucketLarger ? bucket : (dayRecord ?? createEmptyBucket());
 
     const mergedToday: DayTokenStats = {
       date: today,
-      inputTokens: bucket.totalTokens >= (dayRecord?.totalTokens || 0) ? bucket.inputTokens : (dayRecord?.inputTokens || 0),
-      outputTokens: bucket.totalTokens >= (dayRecord?.totalTokens || 0) ? bucket.outputTokens : (dayRecord?.outputTokens || 0),
-      cacheHitTokens: bucket.totalTokens >= (dayRecord?.totalTokens || 0) ? bucket.cacheHitTokens : (dayRecord?.cacheHitTokens || 0),
-      cacheMissTokens: bucket.totalTokens >= (dayRecord?.totalTokens || 0) ? bucket.cacheMissTokens : (dayRecord?.cacheMissTokens || 0),
-      totalTokens: total,
+      inputTokens: chosen.inputTokens,
+      outputTokens: chosen.outputTokens,
+      cacheHitTokens: chosen.cacheHitTokens,
+      cacheMissTokens: chosen.cacheMissTokens,
+      totalTokens: chosen.totalTokens,
       models: Object.keys(models).length > 0 ? models : (dayRecord?.models || {}),
       conversations: dayRecord?.conversations || {},
     };
@@ -410,23 +561,11 @@ export class StatsManager {
         };
         hourlyMap[h] = bucket;
       }
-      addToBucket(bucket, {
-        input: req.inputTokens,
-        output: req.outputTokens,
-        cacheHit: req.cacheHitTokens,
-        cacheMiss: Math.max(0, req.inputTokens - (req.cacheHitTokens || 0)),
-      });
+      addToBucket(bucket, req);
       const m = req.model || "Unknown";
       if (!bucket.models[m]) bucket.models[m] = createEmptyBucket();
       const target = bucket.models[m];
-      if (target) {
-        addToBucket(target, {
-          input: req.inputTokens,
-          output: req.outputTokens,
-          cacheHit: req.cacheHitTokens,
-          cacheMiss: Math.max(0, req.inputTokens - (req.cacheHitTokens || 0)),
-        });
-      }
+      if (target) addToBucket(target, req);
     }
 
     return Object.values(hourlyMap).sort((a, b) => a.hour - b.hour);
@@ -484,23 +623,11 @@ export class StatsManager {
       };
 
       for (const day of slice) {
-        addToBucket(weekBucket, {
-          input: day.inputTokens,
-          output: day.outputTokens,
-          cacheHit: day.cacheHitTokens,
-          cacheMiss: day.cacheMissTokens,
-        });
+        addToBucket(weekBucket, day);
         for (const [m, b] of Object.entries(day.models)) {
           if (!weekBucket.models[m]) weekBucket.models[m] = createEmptyBucket();
           const target = weekBucket.models[m];
-          if (target) {
-            addToBucket(target, {
-              input: b.inputTokens,
-              output: b.outputTokens,
-              cacheHit: b.cacheHitTokens,
-              cacheMiss: b.cacheMissTokens,
-            });
-          }
+          if (target) addToBucket(target, b);
         }
       }
 
@@ -541,24 +668,12 @@ export class StatsManager {
       const targetMonth = monthMap.get(prefix);
       if (!targetMonth) continue;
 
-      addToBucket(targetMonth, {
-        input: day.inputTokens,
-        output: day.outputTokens,
-        cacheHit: day.cacheHitTokens,
-        cacheMiss: day.cacheMissTokens,
-      });
+      addToBucket(targetMonth, day);
 
       for (const [m, b] of Object.entries(day.models)) {
         if (!targetMonth.models[m]) targetMonth.models[m] = createEmptyBucket();
         const target = targetMonth.models[m];
-        if (target) {
-          addToBucket(target, {
-            input: b.inputTokens,
-            output: b.outputTokens,
-            cacheHit: b.cacheHitTokens,
-            cacheMiss: b.cacheMissTokens,
-          });
-        }
+        if (target) addToBucket(target, b);
       }
     }
 
@@ -583,12 +698,7 @@ export class StatsManager {
     let totalTurns = 0;
 
     for (const day of Object.values(this.registry.days)) {
-      addToBucket(summary, {
-        input: day.inputTokens,
-        output: day.outputTokens,
-        cacheHit: day.cacheHitTokens,
-        cacheMiss: day.cacheMissTokens,
-      });
+      addToBucket(summary, day);
     }
 
     for (const c of Object.values(this.registry.conversations || {})) {
@@ -605,20 +715,13 @@ export class StatsManager {
     };
   }
 
-  public async resetAndRecalculate(
-    brainDir: string,
-    countBpeTokens: (text: string) => number,
-  ): Promise<void> {
+  public async resetAndRecalculate(brainDir: string): Promise<void> {
     this.registry = { days: {}, conversations: {}, requests: [], lastUpdated: Date.now() };
     await this.context.globalState.update(STATS_KEY, this.registry);
-    await this.backfillFromTranscripts(brainDir, countBpeTokens, true);
+    await this.backfillFromTranscripts(brainDir, true);
   }
 
-  public async backfillFromTranscripts(
-    brainDir: string,
-    countBpeTokens: (text: string) => number,
-    force = false,
-  ): Promise<void> {
+  public async backfillFromTranscripts(brainDir: string, force = false): Promise<void> {
     if (!fs.existsSync(brainDir)) return;
 
     try {
@@ -650,149 +753,55 @@ export class StatsManager {
           const lines = content.split("\n").filter(Boolean);
           if (lines.length === 0) continue;
 
-          let detectedModel = "Gemini 3.7 Flash High";
-          let initialPrompt = "";
-          let runningContextTokens = BASE_SYSTEM_PROMPT_TOKENS;
+          const convTitle = extractAntigravityTitle(convId);
+          const parsed = parseTranscriptLines(lines, "", convTitle);
+          const genMetrics = readGenMetadata(convId);
 
-          // Extract initial prompt from step 0
-          try {
-            const firstLine = lines[0];
-            if (firstLine) {
-              const firstObj = JSON.parse(firstLine) as { content?: string };
-              if (firstObj.content) {
-                const reqMatch = firstObj.content.match(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/i);
-                if (reqMatch?.[1]) {
-                  initialPrompt = reqMatch[1].trim().replace(/[\r\n]+/g, " ").slice(0, 75);
-                }
-              }
-            }
-          } catch { /* ignore */ }
-
-          const convTitle = extractAntigravityTitle(convId, initialPrompt);
-
-          interface ActivePromptBlock {
-            timestamp: number;
-            promptText: string;
-            turnCount: number;
-            inputTokens: number;
-            outputTokens: number;
-            cacheHitTokens: number;
-            cacheMissTokens: number;
-          }
-
-          let activeBlock: ActivePromptBlock | null = null;
-
-          const flushBlock = (blk: ActivePromptBlock | null) => {
-            if (!blk || blk.turnCount === 0) return;
-            const dateObj = new Date(blk.timestamp);
+          for (const block of parsed.completedBlocks) {
+            if (block.turnCount === 0) continue;
+            const dateObj = new Date(block.timestamp);
             const dateStr = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, "0")}-${String(dateObj.getDate()).padStart(2, "0")}`;
+
+            const agg = genMetrics
+              ? aggregateBlockTokens(genMetrics.turns, block.startLine, block.endLine)
+              : { inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, cacheMissTokens: 0, model: "", maxGenIdx: 0 };
+
+            const model = agg.model
+              ? (formatDynamicModelName(agg.model) || block.detectedModel)
+              : block.detectedModel;
+
             this.recordTokens(
               dateStr,
-              detectedModel,
+              model,
               convId,
               convTitle,
               "",
-              blk.inputTokens,
-              blk.outputTokens,
-              blk.cacheHitTokens,
-              blk.cacheMissTokens,
-              blk.promptText,
-              blk.timestamp,
-              blk.turnCount,
+              agg.inputTokens,
+              agg.outputTokens,
+              agg.cacheHitTokens,
+              agg.cacheMissTokens,
+              block.promptText,
+              block.timestamp,
+              block.turnCount,
             );
-          };
-
-          for (let i = 0; i < lines.length; i++) {
-            const line = lines[i];
-            if (!line) continue;
-
-            try {
-              const obj = JSON.parse(line) as {
-                type?: string;
-                source?: string;
-                content?: string;
-                thinking?: string;
-                tool_calls?: unknown[];
-                created_at?: string;
-              };
-
-              if (obj.source !== "MODEL" && obj.content) {
-                const mMatch = obj.content.match(/`?Model Selection`? from [^`\r\n]+? to ([^\r\n`]+?)(?:\.\s+No need|\.\s*$|$)/i);
-                if (mMatch?.[1]) {
-                  const parsed = formatDynamicModelName(mMatch[1]);
-                  if (parsed) detectedModel = parsed;
-                }
-              }
-
-              if (obj.type === "CHECKPOINT") {
-                const cac = countBpeTokens(obj.content || "");
-                runningContextTokens = cac;
-              } else if (obj.source === "USER_INPUT" || obj.source === "USER_EXPLICIT") {
-                flushBlock(activeBlock);
-
-                const text = obj.content || "";
-                const req = text.match(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/i);
-                const pText = (req?.[1] || text).trim().replace(/[\r\n]+/g, " ").slice(0, 80);
-                const reqTime = obj.created_at ? Date.parse(obj.created_at) : (item.mtime || Date.now());
-
-                const inpTurn = countBpeTokens(text);
-                runningContextTokens += inpTurn;
-
-                activeBlock = {
-                  timestamp: reqTime,
-                  promptText: pText || "User Prompt",
-                  turnCount: 0,
-                  inputTokens: 0,
-                  outputTokens: 0,
-                  cacheHitTokens: 0,
-                  cacheMissTokens: 0,
-                };
-              } else if (obj.type === "PLANNER_RESPONSE" || (!obj.type && obj.source === "MODEL")) {
-                const stepTime = obj.created_at ? Date.parse(obj.created_at) : (item.mtime || Date.now());
-                if (!activeBlock) {
-                  activeBlock = {
-                    timestamp: stepTime,
-                    promptText: initialPrompt || convTitle || "Initial Request",
-                    turnCount: 0,
-                    inputTokens: 0,
-                    outputTokens: 0,
-                    cacheHitTokens: 0,
-                    cacheMissTokens: 0,
-                  };
-                }
-
-                activeBlock.turnCount += 1;
-                const turnInp = runningContextTokens;
-                const turnHit = Math.max(0, turnInp - BASE_SYSTEM_PROMPT_TOKENS);
-                const turnMiss = Math.min(turnInp, BASE_SYSTEM_PROMPT_TOKENS);
-
-                let outTurn = countBpeTokens(obj.content || "");
-                if (obj.thinking) outTurn += countBpeTokens(obj.thinking);
-                if (Array.isArray(obj.tool_calls)) outTurn += countBpeTokens(JSON.stringify(obj.tool_calls));
-
-                activeBlock.inputTokens += turnInp;
-                activeBlock.cacheHitTokens += turnHit;
-                activeBlock.cacheMissTokens += turnMiss;
-                activeBlock.outputTokens += outTurn;
-                runningContextTokens += outTurn;
-              } else {
-                const toolOut = countBpeTokens(obj.content || "");
-                runningContextTokens += toolOut;
-              }
-            } catch { /* ignore */ }
           }
-
-          flushBlock(activeBlock);
         } catch { /* ignore */ }
       }
 
-      // Sort and prune requests strictly by latest timestamp
-      this.registry.requests.sort((a, b) => b.timestamp - a.timestamp);
-      if (this.registry.requests.length > 500) {
-        this.registry.requests = this.registry.requests.slice(0, 500);
-      }
+      this.pruneRequests();
       this.schedulePersist();
     } catch { /* ignore */ }
+  }
+
+  private pruneRequests(): void {
+    if (!this.registry.requests) {
+      this.registry.requests = [];
+      return;
+    }
+    this.registry.requests.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+    if (this.registry.requests.length > 500) {
+      this.registry.requests = this.registry.requests.slice(0, 500);
+    }
   }
 
   private schedulePersist(): void {
@@ -805,10 +814,7 @@ export class StatsManager {
 
   private async persist(): Promise<void> {
     try {
-      this.registry.requests.sort((a, b) => b.timestamp - a.timestamp);
-      if (this.registry.requests.length > 500) {
-        this.registry.requests = this.registry.requests.slice(0, 500);
-      }
+      this.pruneRequests();
       await this.context.globalState.update(STATS_KEY, this.registry);
       this.onStatsChangeEmitter.fire();
     } catch (e: unknown) {

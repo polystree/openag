@@ -117,6 +117,7 @@ export interface ConversationStats extends TokenBucket {
   title: string;
   workspace: string;
   model: string;
+  models?: Record<string, TokenBucket>;
   turnCount: number;
   lastActive: number;
 }
@@ -154,5 +155,14 @@ export interface TokenStatsRegistry {
   lastUpdated: number;
 }
 
-declare const __PKG_VERSION__: string | undefined;
-export const EXTENSION_VERSION = typeof __PKG_VERSION__ !== "undefined" ? __PKG_VERSION__ : "1.0.0";
+export interface EffectiveQuota {
+  percent: number;
+  resetTs: number;
+}
+
+declare global {
+  var __PKG_VERSION__: string | undefined;
+}
+
+export const EXTENSION_VERSION = globalThis.__PKG_VERSION__ ?? "1.0.0";
+

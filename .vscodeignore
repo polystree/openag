@@ -6,6 +6,8 @@ dist/**/*.map
 *.map
 *.vsix
 .oxlintrc.json
+oxlint.config.ts
+tools/**
 tsconfig.json
 esbuild.js
 node_modules/**

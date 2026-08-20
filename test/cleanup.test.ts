@@ -1,15 +1,15 @@
 import { describe, expect, mock, test } from "bun:test";
 
-let store: Record<string, unknown> = {};
+const store = new Map<string, unknown>();
 
 mock.module("vscode", () => ({
-  EventEmitter: class {
-    private listeners: Array<(arg: unknown) => void> = [];
-    public event = (fn: (arg: unknown) => void) => {
+  EventEmitter: class<T = void> {
+    private listeners: Array<(arg: T) => void> = [];
+    public event = (fn: (arg: T) => void) => {
       this.listeners.push(fn);
       return { dispose: () => {} };
     };
-    public fire = (val: unknown) => {
+    public fire = (val: T) => {
       for (const fn of this.listeners) fn(val);
     };
     public dispose = () => {
@@ -22,22 +22,35 @@ const { LogManager } = await import("../src/core/log-manager.js");
 const { QuotaMonitor } = await import("../src/core/quota-monitor.js");
 const { StatsManager } = await import("../src/core/stats-manager.js");
 
+interface LogManagerFixture {
+  logs: Array<{ id: string; timestamp: number; level: string; category: string; message: string }>;
+}
+
+interface QuotaMonitorFixture {
+  quotas: Map<string, unknown>;
+}
+
 describe("Database & Cache Cleanup Engine", () => {
+  // SAFETY: Mock VSCode ExtensionContext for unit testing
+  // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- test double mock
   const fakeContext = {
     globalState: {
-      get: <T>(key: string, def?: T): T => (store[key] !== undefined ? (store[key] as T) : (def as T)),
-      update: async (key: string, val: unknown) => {
-        store[key] = val;
+      // SAFETY: Map lookup returns stored generic state
+      get: <T>(key: string, def?: T): T => (store.has(key) ? (store.get(key) as T) : (def as T)),
+      update: async <T>(key: string, val: T): Promise<void> => {
+        store.set(key, val);
       },
     },
   } as unknown as import("vscode").ExtensionContext;
 
   test("LogManager purges logs older than 24h", () => {
-    store = {};
+    store.clear();
     const logMgr = new LogManager(fakeContext);
     const now = Date.now();
-    // Inject old log (>24h) and recent log (<24h)
-    (logMgr as unknown as { logs: Array<{ id: string; timestamp: number; level: string; category: string; message: string }> }).logs = [
+    // SAFETY: test fixture injecting mock logs directly into instance
+    // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- test fixture access
+    const testLogMgr = logMgr as unknown as LogManagerFixture;
+    testLogMgr.logs = [
       { id: "old", timestamp: now - 25 * 3600 * 1000, level: "info", category: "SYSTEM", message: "old message" },
       { id: "new", timestamp: now - 1 * 3600 * 1000, level: "info", category: "SYSTEM", message: "recent message" },
     ];
@@ -50,7 +63,7 @@ describe("Database & Cache Cleanup Engine", () => {
   });
 
   test("QuotaMonitor cleans up quota caches older than 5h", () => {
-    store = {};
+    store.clear();
     const fakeTokenMgr = {
       isExtensionEnabled: () => true,
       isRotationEnabled: () => true,
@@ -59,17 +72,21 @@ describe("Database & Cache Cleanup Engine", () => {
       autoSelectHighestQuota: () => {},
     };
 
+    // SAFETY: Mock TokenManager interface for QuotaMonitor test
     const quotaMon = new QuotaMonitor(fakeTokenMgr as never, () => {}, undefined, undefined, fakeContext);
     const now = Date.now();
 
-    (quotaMon as unknown as { quotas: Map<string, unknown> }).quotas.set("stale@gmail.com", {
+    // SAFETY: test fixture injecting mock quotas directly into instance
+    // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- test fixture access
+    const testQuotaMon = quotaMon as unknown as QuotaMonitorFixture;
+    testQuotaMon.quotas.set("stale@gmail.com", {
       email: "stale@gmail.com",
       tier: "pro",
       families: [],
       models: [],
       lastUpdated: now - 6 * 3600 * 1000,
     });
-    (quotaMon as unknown as { quotas: Map<string, unknown> }).quotas.set("fresh@gmail.com", {
+    testQuotaMon.quotas.set("fresh@gmail.com", {
       email: "fresh@gmail.com",
       tier: "pro",
       families: [],
@@ -85,7 +102,7 @@ describe("Database & Cache Cleanup Engine", () => {
   });
 
   test("StatsManager cleans up requests older than 7d", () => {
-    store = {};
+    store.clear();
     const statsMgr = new StatsManager(fakeContext, () => {});
     const now = Date.now();
 
@@ -100,7 +117,7 @@ describe("Database & Cache Cleanup Engine", () => {
   });
 
   test("StatsManager preserves distinct request cards for identical prompts across sessions", () => {
-    store = {};
+    store.clear();
     const statsMgr = new StatsManager(fakeContext, () => {});
     const now = Date.now();
 
@@ -115,3 +132,4 @@ describe("Database & Cache Cleanup Engine", () => {
     statsMgr.dispose();
   });
 });
+

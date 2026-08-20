@@ -41,7 +41,7 @@ export class QuotaMonitor {
   ) {
     if (this.context) {
       const cached = this.context.globalState.get<Record<string, AccountQuota>>(KEY_QUOTA_CACHE, {});
-      if (cached && typeof cached === "object") {
+      if (cached) {
         for (const [email, q] of Object.entries(cached)) {
           if (q && email) this.quotas.set(email.toLowerCase(), q);
         }
@@ -103,6 +103,7 @@ export class QuotaMonitor {
         return null;
       }
 
+      // SAFETY: Google Cloud internal quota endpoint response
       const data = (await res.json()) as QuotaResponse;
       let families: FamilyQuota[] = [];
       const models: ModelQuota[] = [];
@@ -213,6 +214,7 @@ export class QuotaMonitor {
         body: JSON.stringify({}),
       });
       if (!res.ok) return;
+      // SAFETY: Available models endpoint response structure
       const data = (await res.json()) as { models?: Record<string, { maxTokens?: number }> };
       if (data.models) this.usageTracker?.registerModelMetadata(data.models);
       this.modelsDiscovered = true;
@@ -227,9 +229,14 @@ export class QuotaMonitor {
         body: CODE_ASSIST_BODY,
       });
       if (!res.ok) return account.tier || "pro";
+      // SAFETY: Code assist subscription tier response payload
       const data = (await res.json()) as { paidTier?: { id?: string; name?: string }; tierId?: string; currentTier?: { id?: string; name?: string } };
       const raw = (data.paidTier?.id || data.paidTier?.name || data.tierId || data.currentTier?.id || data.currentTier?.name || "").toLowerCase();
-      return raw.includes("ultra") ? "ultra" : raw.includes("pro") || raw.includes("advanced") || raw.includes("standard") ? "pro" : raw.includes("plus") ? "plus" : raw.includes("free") ? "free" : account.tier || "pro";
+      if (raw.includes("ultra")) return "ultra";
+      if (raw.includes("pro") || raw.includes("advanced") || raw.includes("standard")) return "pro";
+      if (raw.includes("plus")) return "plus";
+      if (raw.includes("free")) return "free";
+      return account.tier || "pro";
     } catch {
       return account.tier || "pro";
     }
@@ -256,7 +263,9 @@ export class QuotaMonitor {
 
   private categorizeFamily(name: string): "gemini" | "claude" | "other" {
     const lower = name.toLowerCase();
-    return lower.includes("claude") ? "claude" : ["gemini", "pro", "flash", "ultra", "exp"].some((k) => lower.includes(k)) ? "gemini" : "other";
+    if (lower.includes("claude")) return "claude";
+    if (lower.includes("gemini")) return "gemini";
+    return "other";
   }
 
   private startPolling(): void {

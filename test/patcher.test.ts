@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import * as crypto from "node:crypto";
+import type { EffectiveQuota } from "../src/types.js";
 import * as vm from "node:vm";
 
 const TAG_AUTORUN = "/*OPENAG:autorun*/";
@@ -89,7 +90,7 @@ describe("AutoRunPatcher modular patch transformations", () => {
 });
 
 describe("TokenManager Quota Selection logic", () => {
-  function getEffectiveQuota(families: Array<{ percent: number; limit5h?: { percent: number; resetTime?: string }; resetTime?: string }>): { percent: number; resetTs: number } {
+  function getEffectiveQuota(families: Array<{ percent: number; limit5h?: { percent: number; resetTime?: string }; resetTime?: string }>): EffectiveQuota {
     if (!families || families.length === 0) return { percent: -1, resetTs: Infinity };
     let minPct = 100, minResetTs = Infinity;
     for (const f of families) {

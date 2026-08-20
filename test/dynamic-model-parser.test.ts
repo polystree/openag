@@ -1,13 +1,13 @@
 import { describe, expect, mock, test } from "bun:test";
 
 mock.module("vscode", () => ({
-  EventEmitter: class {
-    private listeners: Array<(arg: unknown) => void> = [];
-    public event = (fn: (arg: unknown) => void) => {
+  EventEmitter: class<T = void> {
+    private listeners: Array<(arg: T) => void> = [];
+    public event = (fn: (arg: T) => void) => {
       this.listeners.push(fn);
       return { dispose: () => {} };
     };
-    public fire = (val: unknown) => {
+    public fire = (val: T) => {
       for (const fn of this.listeners) fn(val);
     };
     public dispose = () => {

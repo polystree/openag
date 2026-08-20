@@ -1,15 +1,15 @@
 import { describe, expect, mock, test } from "bun:test";
 
-let store: Record<string, unknown> = {};
+const store = new Map<string, unknown>();
 
 mock.module("vscode", () => ({
-  EventEmitter: class {
-    private listeners: Array<(arg: unknown) => void> = [];
-    public event = (fn: (arg: unknown) => void) => {
+  EventEmitter: class<T = void> {
+    private listeners: Array<(arg: T) => void> = [];
+    public event = (fn: (arg: T) => void) => {
       this.listeners.push(fn);
       return { dispose: () => {} };
     };
-    public fire = (val: unknown) => {
+    public fire = (val: T) => {
       for (const fn of this.listeners) fn(val);
     };
     public dispose = () => {
@@ -18,20 +18,23 @@ mock.module("vscode", () => ({
   },
 }));
 
-const { StatsManager } = await import("../src/core/stats-manager.js");
+const { StatsManager, parseTranscriptLines } = await import("../src/core/stats-manager.js");
 
 describe("StatsManager Token Usage Engine", () => {
+  // SAFETY: Mock VSCode ExtensionContext for unit testing
+  // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- test double mock
   const fakeContext = {
     globalState: {
-      get: <T>(key: string): T | undefined => store[key] as T | undefined,
-      update: async (key: string, val: unknown) => {
-        store[key] = val;
+      // SAFETY: Map lookup returns stored generic state
+      get: <T>(key: string): T | undefined => store.get(key) as T | undefined,
+      update: async <T>(key: string, val: T): Promise<void> => {
+        store.set(key, val);
       },
     },
   } as unknown as import("vscode").ExtensionContext;
 
   test("records tokens and updates today stats and conversations accurately", () => {
-    store = {};
+    store.clear();
     const manager = new StatsManager(fakeContext, () => {});
     const today = new Date().toISOString().slice(0, 10);
 
@@ -61,7 +64,7 @@ describe("StatsManager Token Usage Engine", () => {
   });
 
   test("aggregates daily and weekly rollups with cache metrics", () => {
-    store = {};
+    store.clear();
     const manager = new StatsManager(fakeContext, () => {});
 
     manager.recordTokens("2026-08-18", "Gemini 3.6 Flash Medium", "c1", "Audit code", "", 30000, 1500, 25000, 5000);
@@ -88,6 +91,80 @@ describe("StatsManager Token Usage Engine", () => {
     expect(Array.isArray(hourly)).toBe(true);
     expect(hourly.length).toBeGreaterThan(0);
     expect(hourly[0]?.hourLabel).toBe("00:00");
+    manager.dispose();
+  });
+
+  test("parseTranscriptLines ignores in-progress active request until it finishes", () => {
+    const linesInProgress = [
+      JSON.stringify({ step_index: 0, source: "USER_INPUT", type: "USER_INPUT", content: "<USER_REQUEST>Refactor auth logic</USER_REQUEST>" }),
+      JSON.stringify({ step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", content: "Looking up auth file", tool_calls: [{ name: "view_file", args: {} }] }),
+      JSON.stringify({ step_index: 2, source: "MODEL", type: "VIEW_FILE", content: "export function auth() {}" }),
+    ];
+
+    const parsedActive = parseTranscriptLines(linesInProgress);
+    expect(parsedActive.completedBlocks.length).toBe(0);
+    expect(parsedActive.activeBlock).not.toBeNull();
+    expect(parsedActive.activeBlock?.isFinished).toBe(false);
+    expect(parsedActive.activeBlock?.promptText).toBe("Refactor auth logic");
+    expect(parsedActive.completedEndLine).toBe(0);
+
+    // When the final model response arrives with no tool calls, request completes
+    const linesCompleted = [
+      ...linesInProgress,
+      JSON.stringify({ step_index: 3, source: "MODEL", type: "PLANNER_RESPONSE", content: "I have refactored the auth logic.", tool_calls: [] }),
+    ];
+
+    const parsedDone = parseTranscriptLines(linesCompleted);
+    expect(parsedDone.completedBlocks.length).toBe(1);
+    expect(parsedDone.activeBlock).toBeNull();
+    expect(parsedDone.completedBlocks[0]?.isFinished).toBe(true);
+    expect(parsedDone.completedBlocks[0]?.turnCount).toBe(2);
+    expect(parsedDone.completedBlocks[0]?.promptText).toBe("Refactor auth logic");
+    expect(parsedDone.completedEndLine).toBe(4);
+  });
+
+  test("parseTranscriptLines handles multiple requests with trailing active request", () => {
+    const lines = [
+      // Request 1: Completed
+      JSON.stringify({ step_index: 0, source: "USER_INPUT", type: "USER_INPUT", content: "<USER_REQUEST>First prompt</USER_REQUEST>" }),
+      JSON.stringify({ step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", content: "First answer", tool_calls: [] }),
+      // Request 2: Active / in progress
+      JSON.stringify({ step_index: 2, source: "USER_INPUT", type: "USER_INPUT", content: "<USER_REQUEST>Second prompt</USER_REQUEST>" }),
+      JSON.stringify({ step_index: 3, source: "MODEL", type: "PLANNER_RESPONSE", content: "Calling tool", tool_calls: [{ name: "run_command" }] }),
+      JSON.stringify({ step_index: 4, source: "MODEL", type: "RUN_COMMAND", content: "Command output" }),
+    ];
+
+    const parsed = parseTranscriptLines(lines);
+    expect(parsed.completedBlocks.length).toBe(1);
+    expect(parsed.completedBlocks[0]?.promptText).toBe("First prompt");
+    expect(parsed.completedBlocks[0]?.turnCount).toBe(1);
+    expect(parsed.completedEndLine).toBe(2);
+
+    expect(parsed.activeBlock).not.toBeNull();
+    expect(parsed.activeBlock?.promptText).toBe("Second prompt");
+    expect(parsed.activeBlock?.isFinished).toBe(false);
+  });
+
+  test("tracks multiple models accurately within a single session", () => {
+    store.clear();
+    const manager = new StatsManager(fakeContext, () => {});
+    const today = new Date().toISOString().slice(0, 10);
+
+    // Turn 1 with Gemini 3.7 Flash
+    manager.recordTokens(today, "gemini-3.7-flash", "conv-multi", "Multi-model session", "", 10000, 500, 8000, 2000, "First turn", Date.now() - 1000, 1);
+    // Turn 2 with Claude Opus 4.6
+    manager.recordTokens(today, "claude-opus-4-6-thinking", "conv-multi", "Multi-model session", "", 20000, 1000, 15000, 5000, "Second turn", Date.now(), 1);
+
+    const convList = manager.getConversationsList();
+    expect(convList.length).toBe(1);
+    const conv = convList[0];
+    expect(conv?.id).toBe("conv-multi");
+    expect(conv?.totalTokens).toBe(31500);
+    expect(conv?.turnCount).toBe(2);
+    expect(conv?.models).toBeDefined();
+    expect(conv?.models?.["Gemini 3.7 Flash"]?.totalTokens).toBe(10500);
+    expect(conv?.models?.["Claude Opus 4 6 Thinking"]?.totalTokens).toBe(21000);
+
     manager.dispose();
   });
 });

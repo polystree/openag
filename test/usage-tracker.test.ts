@@ -1,13 +1,13 @@
 import { describe, expect, mock, test } from "bun:test";
 
 mock.module("vscode", () => ({
-  EventEmitter: class {
-    private listeners: Array<(arg: unknown) => void> = [];
-    public event = (fn: (arg: unknown) => void) => {
+  EventEmitter: class<T = void> {
+    private listeners: Array<(arg: T) => void> = [];
+    public event = (fn: (arg: T) => void) => {
       this.listeners.push(fn);
       return { dispose: () => {} };
     };
-    public fire = (val: unknown) => {
+    public fire = (val: T) => {
       for (const fn of this.listeners) fn(val);
     };
     public dispose = () => {
@@ -16,21 +16,9 @@ mock.module("vscode", () => ({
   },
 }));
 
-const { countBpeTokens, UsageTracker } = await import("../src/core/usage-tracker.js");
+const { UsageTracker } = await import("../src/core/usage-tracker.js");
 
-describe("UsageTracker & BPE Tokenizer", () => {
-  test("countBpeTokens calculates accurate tokens for plain text and code", () => {
-    expect(countBpeTokens("")).toBe(0);
-    expect(countBpeTokens("Hello world")).toBe(2);
-    expect(countBpeTokens("const x = 42;")).toBe(6);
-    const code = `function calculate(a: number, b: number): number {
-      return a + b * 100;
-    }`;
-    const tokens = countBpeTokens(code);
-    expect(tokens).toBeGreaterThan(10);
-    expect(tokens).toBeLessThan(30);
-  });
-
+describe("UsageTracker", () => {
   test("getModelContextLimit returns correct context limits", () => {
     const tracker = new UsageTracker();
     expect(tracker.getModelContextLimit("gemini-3.7-flash")).toBe(1048576);

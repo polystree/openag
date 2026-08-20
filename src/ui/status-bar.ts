@@ -12,9 +12,13 @@ const makeBar = (p: number): string => {
 const fmtTime = (s?: string): string => {
   if (!s) return "";
   const d = Date.parse(s) - Date.now();
-  if (d <= 0) return "ready";
-  const days = Math.floor(d / 864e5), hrs = Math.floor((d % 864e5) / 36e5), mins = Math.floor((d % 36e5) / 6e4);
-  return days > 0 ? `${days}d ${hrs}h` : hrs > 0 ? `${hrs}h ${mins}m` : `${mins}m`;
+  if (d <= 0 || Number.isNaN(d)) return "ready";
+  const days = Math.floor(d / 864e5);
+  const hrs = Math.floor((d % 864e5) / 36e5);
+  const mins = Math.floor((d % 36e5) / 6e4);
+  if (days > 0) return `${days}d ${hrs}h`;
+  if (hrs > 0) return `${hrs}h ${mins}m`;
+  return `${mins}m`;
 };
 
 export class StatusBarHUD {
@@ -30,7 +34,7 @@ export class StatusBarHUD {
 
   constructor(context: vscode.ExtensionContext) {
     this.item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-    this.item.command = "openag.switchAccount";
+    this.item.command = "openag.openPanel";
     context.subscriptions.push(this.item);
     this.scheduleRender();
     this.item.show();
@@ -124,7 +128,7 @@ export class StatusBarHUD {
       const modelLabel = this.currentContext.model ? ` (${this.currentContext.model})` : "";
       md.appendMarkdown(`---\n\n$(server-process) **Context**${modelLabel}: ${this.currentContext.current.toLocaleString()} / ${this.currentContext.limit.toLocaleString()} (${this.currentContext.percent}%)\n\n`);
     }
-    md.appendMarkdown("---\n*Click to switch active account or trigger actions*");
+    md.appendMarkdown("---\n*Click to open OpenAG panel*");
     this.item.tooltip = md;
   }
 

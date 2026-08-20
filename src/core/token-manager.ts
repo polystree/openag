@@ -1,6 +1,6 @@
 import * as crypto from "node:crypto";
 import * as vscode from "vscode";
-import type { Account, AccountQuota, AccountTier, OAuthTokens, OpenAGConfig } from "../types.js";
+import type { Account, AccountQuota, AccountStatus, AccountTier, EffectiveQuota, OAuthTokens, OpenAGConfig } from "../types.js";
 import { USSBridge } from "./uss-bridge.js";
 
 const KEY_ACCOUNTS = "openag.accounts.v1";
@@ -33,10 +33,11 @@ export class TokenManager {
       const stored = await this.context.secrets.get(key);
       if (acc.refreshToken || acc.accessToken) {
         await this.context.secrets.store(key, JSON.stringify({ accessToken: acc.accessToken || "", refreshToken: acc.refreshToken || "", tokenExpiresAt: acc.tokenExpiresAt || 0 }));
-        delete acc.accessToken;
-        delete acc.refreshToken;
+        acc.accessToken = undefined;
+        acc.refreshToken = undefined;
       } else if (stored) {
         try {
+          // SAFETY: stored secret contains serialized OAuthTokens JSON
           const parsed = JSON.parse(stored) as OAuthTokens;
           acc.accessToken = parsed.accessToken;
           acc.refreshToken = parsed.refreshToken;
@@ -128,7 +129,14 @@ export class TokenManager {
   public async toggleAccountEnabled(email: string, enabled?: boolean): Promise<Account | null> {
     const target = this.accounts.find((a) => a.email.toLowerCase() === email.toLowerCase());
     if (!target) return null;
-    const newStatus = enabled !== undefined ? (enabled ? "active" : "disabled") : (target.status === "disabled" ? "active" : "disabled");
+
+    let newStatus: AccountStatus;
+    if (enabled !== undefined) {
+      newStatus = enabled ? "active" : "disabled";
+    } else {
+      newStatus = target.status === "disabled" ? "active" : "disabled";
+    }
+
     target.status = newStatus;
     target.updatedAt = Date.now();
 
@@ -171,7 +179,7 @@ export class TokenManager {
     return target;
   }
 
-  public getEffectiveQuota(email: string, quotas: Record<string, AccountQuota>): { percent: number; resetTs: number } {
+  public getEffectiveQuota(email: string, quotas: Record<string, AccountQuota>): EffectiveQuota {
     const q = quotas[email.toLowerCase()];
     if (!q?.families || q.families.length === 0) return { percent: -1, resetTs: Infinity };
     let minPct = 100, minResetTs = Infinity;
@@ -209,17 +217,16 @@ export class TokenManager {
       }
     }
 
-    if (!bestAcc || bestPct <= 0 || bestAcc.email.toLowerCase() === activeEmail) return null;
-    const shouldSwitch = bestPct > activeInfo.percent;
-    if (shouldSwitch) {
-      this.log(`[AutoRotate] Switching to highest-quota account ${bestAcc.email} (${bestPct}%) from ${this.activeEmail} (${activeInfo.percent}%) [${reason || "auto"}]`);
-      return this.selectAccount(bestAcc.email);
+    if (!bestAcc || bestPct <= 0 || bestAcc.email.toLowerCase() === activeEmail || bestPct <= activeInfo.percent) {
+      return null;
     }
-    return null;
+    this.log(`[AutoRotate] Switching to highest-quota account ${bestAcc.email} (${bestPct}%) from ${this.activeEmail} (${activeInfo.percent}%) [${reason || "auto"}]`);
+    return this.selectAccount(bestAcc.email);
   }
 
   public getActiveAccount(): Account | null {
-    return this.activeEmail ? this.accounts.find((a) => a.email.toLowerCase() === this.activeEmail.toLowerCase()) ?? null : null;
+    if (!this.activeEmail) return null;
+    return this.accounts.find((a) => a.email.toLowerCase() === this.activeEmail.toLowerCase()) ?? null;
   }
 
   public async getValidAccessToken(account: Account): Promise<string> {
@@ -228,6 +235,7 @@ export class TokenManager {
       const stored = await this.context.secrets.get(this.getSecretKey(account.email));
       if (stored) {
         try {
+          // SAFETY: stored secret contains serialized OAuthTokens JSON
           const parsed = JSON.parse(stored) as OAuthTokens;
           account.accessToken = parsed.accessToken;
           account.refreshToken = parsed.refreshToken;
@@ -235,7 +243,10 @@ export class TokenManager {
         } catch { /* ignore parse error */ }
       }
     }
-    return account.accessToken && account.tokenExpiresAt > nowSec + 60 ? account.accessToken : this.forceRefreshToken(account);
+    if (account.accessToken && account.tokenExpiresAt > nowSec + 60) {
+      return account.accessToken;
+    }
+    return this.forceRefreshToken(account);
   }
 
   public async forceRefreshToken(account: Account): Promise<string> {
@@ -248,6 +259,7 @@ export class TokenManager {
         if (!account.refreshToken) {
           const stored = await this.context.secrets.get(this.getSecretKey(account.email));
           if (stored) {
+            // SAFETY: stored secret contains serialized OAuthTokens JSON
             const parsed = JSON.parse(stored) as OAuthTokens;
             account.refreshToken = parsed.refreshToken;
           }
@@ -284,6 +296,7 @@ export class TokenManager {
       body: params.toString(),
     });
     if (!res.ok) throw new Error(`Token refresh failed HTTP ${res.status}: ${await res.text()}`);
+    // SAFETY: Google OAuth token endpoint response payload
     const data = (await res.json()) as { access_token: string; expires_in: number; refresh_token?: string; token_type?: string };
     return {
       accessToken: data.access_token,
@@ -311,15 +324,21 @@ export class TokenManager {
         tokenType: "Bearer",
         isGcpTos: false,
       });
-      void fetch("https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-          "User-Agent": "Antigravity/2.5.5",
-        },
-        body: JSON.stringify({ metadata: { ideType: "ANTIGRAVITY", ideVersion: "2.5.5" } }),
-      }).catch(() => {});
+      void (async () => {
+        try {
+          await fetch("https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+              "User-Agent": "Antigravity/2.5.5",
+            },
+            body: JSON.stringify({ metadata: { ideType: "ANTIGRAVITY", ideVersion: "2.5.5" } }),
+          });
+        } catch (fetchErr: unknown) {
+          this.log(`[USS] Code assist pre-warm failed: ${fetchErr instanceof Error ? fetchErr.message : String(fetchErr)}`);
+        }
+      })();
     } catch (e: unknown) {
       this.log(`[USS] Failed to sync token to USS: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -345,12 +364,7 @@ export class TokenManager {
   }
 
   private async persist(): Promise<void> {
-    const metadataList: Account[] = this.accounts.map((a) => {
-      const copy = { ...a };
-      delete copy.accessToken;
-      delete copy.refreshToken;
-      return copy;
-    });
+    const metadataList = this.accounts.map(({ accessToken: _a, refreshToken: _r, ...rest }) => rest);
     await this.context.globalState.update(KEY_ACCOUNTS, metadataList);
   }
 

@@ -1,15 +1,15 @@
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import type { ContextUsage } from "../types.js";
-import { extractAntigravityTitle, formatDynamicModelName, type StatsManager } from "./stats-manager.js";
-
-const BRAIN_DIR = path.join(os.homedir(), ".gemini", "antigravity-ide", "brain");
-const CONV_DIR = path.join(os.homedir(), ".gemini", "antigravity-ide", "conversations");
-
-const BPE_PATTERN = /'(?:[sdmt]|ll|ve|re)| ?[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+/gu;
-const BASE_SYSTEM_PROMPT_TOKENS = 4200;
+import { aggregateBlockTokens, readGenMetadata, readGenMetadataSince } from "./gen-metadata-reader.js";
+import { BRAIN_DIR, CONV_DIR, loadSqlite } from "./sqlite-utils.js";
+import {
+  extractAntigravityTitle,
+  formatDynamicModelName,
+  parseTranscriptLines,
+  type StatsManager,
+} from "./stats-manager.js";
 
 function normalizePath(p: string): string {
   if (!p) return "";
@@ -19,20 +19,9 @@ function normalizePath(p: string): string {
   return p.replace(/\\/g, "/").toLowerCase().replace(/^file:\/\/\/?/, "").replace(/^\/+/, "").replace(/\/$/, "");
 }
 
-interface SqliteDb {
-  prepare: (sql: string) => { get: (param?: unknown) => { data?: Uint8Array | Buffer } | undefined };
-  close?: () => void;
-}
-
-export function countBpeTokens(text: string): number {
-  if (!text) return 0;
-  BPE_PATTERN.lastIndex = 0;
-  let total = 0;
-  for (let m = BPE_PATTERN.exec(text); m !== null; m = BPE_PATTERN.exec(text)) {
-    const len = m[0].length;
-    total += len <= 8 ? 1 : ((len + 3) >> 2);
-  }
-  return total;
+function extractUriFromText(text: string): string | null {
+  const m = text.match(/file:\/\/\/[-a-zA-Z0-9_.:~%+/]+/i);
+  return m ? normalizePath(m[0]) : null;
 }
 
 export class UsageTracker {
@@ -50,10 +39,7 @@ export class UsageTracker {
   private workspacePaths: string[] = [];
   private lastProcessedLineCount = 0;
   private lastProcessedPath: string | null = null;
-
-  private cachedLineTokens: number[] = [];
-  private cachedRunningTokens = BASE_SYSTEM_PROMPT_TOKENS;
-  private cachedInitialPrompt = "";
+  private lastProcessedGenIdx = 0;
   private isComputing = false;
 
   private readonly dbWorkspaceCache = new Map<string, { mtime: number; size: number; uri: string | null }>();
@@ -71,7 +57,7 @@ export class UsageTracker {
     this.refresh();
     this.pollInterval = setInterval(() => this.refresh(), 10000);
     if (this.statsManager) {
-      void this.statsManager.backfillFromTranscripts(BRAIN_DIR, countBpeTokens);
+      void this.statsManager.backfillFromTranscripts(BRAIN_DIR);
     }
   }
 
@@ -110,6 +96,12 @@ export class UsageTracker {
     return 1048576;
   }
 
+  public resetProcessedLines(): void {
+    this.lastProcessedLineCount = 0;
+    this.lastProcessedPath = null;
+    this.scheduleCompute();
+  }
+
   public refresh(): void {
     const convId = this.resolveActiveConversationId();
     if (!convId) return;
@@ -119,9 +111,6 @@ export class UsageTracker {
       this.activeTranscriptPath = path.join(BRAIN_DIR, convId, ".system_generated", "logs", "transcript.jsonl");
       this.lastProcessedLineCount = 0;
       this.lastProcessedPath = null;
-      this.cachedLineTokens = [];
-      this.cachedRunningTokens = BASE_SYSTEM_PROMPT_TOKENS;
-      this.cachedInitialPrompt = "";
       this.attachTranscriptWatcher();
     }
 
@@ -172,22 +161,15 @@ export class UsageTracker {
       }
 
       let uri: string | null = null;
-      let sqlite: { DatabaseSync: new (p: string, opts?: { readOnly?: boolean; open?: boolean }) => SqliteDb } | null = null;
-      try {
-        sqlite = require("node:sqlite");
-      } catch {
-        sqlite = null;
-      }
+      const sqlite = loadSqlite();
 
-      if (sqlite?.DatabaseSync) {
+      if (sqlite) {
         try {
           const db = new sqlite.DatabaseSync(dbPath, { readOnly: true, open: true });
-          const row = db.prepare("SELECT data FROM trajectory_metadata_blob WHERE id=?").get("main");
-          if (typeof db.close === "function") db.close();
+          const row = db.prepare("SELECT data FROM trajectory_metadata_blob WHERE id=?").get<{ data?: Uint8Array | Buffer }>("main");
+          db.close();
           if (row?.data) {
-            const text = Buffer.from(row.data).toString("utf-8");
-            const m = text.match(/file:\/\/\/[-a-zA-Z0-9_.:~%+/]+/i);
-            if (m) uri = normalizePath(m[0]);
+            uri = extractUriFromText(Buffer.from(row.data).toString("utf-8"));
           }
         } catch { /* ignore */ }
       }
@@ -199,9 +181,7 @@ export class UsageTracker {
           const buf = Buffer.alloc(readLen);
           fs.readSync(fd, buf, 0, readLen, 0);
           fs.closeSync(fd);
-          const text = buf.toString("utf-8");
-          const m = text.match(/file:\/\/\/[-a-zA-Z0-9_.:~%+/]+/i);
-          if (m) uri = normalizePath(m[0]);
+          uri = extractUriFromText(buf.toString("utf-8"));
         } catch { /* ignore */ }
       }
 
@@ -259,165 +239,74 @@ export class UsageTracker {
       const lines = content.split("\n").filter(Boolean);
       if (lines.length === 0) return;
 
-      if (this.lastProcessedPath !== this.activeTranscriptPath || lines.length < this.cachedLineTokens.length) {
-        this.cachedLineTokens = [];
-        this.cachedRunningTokens = BASE_SYSTEM_PROMPT_TOKENS;
-        this.cachedInitialPrompt = "";
-        this.lastProcessedLineCount = 0;
+      const isPathChanged = this.lastProcessedPath !== this.activeTranscriptPath;
+      const convTitle = this.activeConversationId ? extractAntigravityTitle(this.activeConversationId) : "";
+      const parsed = parseTranscriptLines(lines, "", convTitle);
+
+      if (isPathChanged) {
+        this.lastProcessedLineCount = parsed.completedEndLine;
         this.lastProcessedPath = this.activeTranscriptPath;
+        this.lastProcessedGenIdx = 0;
       }
 
-      let detectedModel = this.activeModel;
-      let initialPrompt = this.cachedInitialPrompt;
+      // Read gen_metadata for exact token counts and context window
+      const genMetrics = this.activeConversationId ? readGenMetadata(this.activeConversationId) : null;
 
-      if (!initialPrompt && lines[0]) {
-        try {
-          const firstObj = JSON.parse(lines[0]) as { content?: string };
-          if (firstObj.content) {
-            const reqMatch = firstObj.content.match(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/i);
-            if (reqMatch?.[1]) {
-              initialPrompt = reqMatch[1].trim().replace(/[\r\n]+/g, " ").slice(0, 75);
-              this.cachedInitialPrompt = initialPrompt;
-            }
-          }
-        } catch { /* ignore */ }
+      if (genMetrics && genMetrics.latestModel) {
+        const formatted = formatDynamicModelName(genMetrics.latestModel);
+        if (formatted) this.activeModel = formatted;
+      } else {
+        this.activeModel = parsed.detectedModel;
       }
 
-      const convTitle = this.activeConversationId ? extractAntigravityTitle(this.activeConversationId, initialPrompt) : initialPrompt;
-
-      const startIdx = this.cachedLineTokens.length;
-      let runningContextTokens = this.cachedRunningTokens;
-
-      for (let i = startIdx; i < lines.length; i++) {
-        const line = lines[i];
-        if (!line) {
-          this.cachedLineTokens.push(0);
-          continue;
-        }
-
-        try {
-          const obj = JSON.parse(line) as {
-            type?: string;
-            source?: string;
-            content?: string;
-            thinking?: string;
-            tool_calls?: unknown[];
-          };
-
-          if (obj.source !== "MODEL" && obj.content) {
-            const mMatch = obj.content.match(/`?Model Selection`? from [^`\r\n]+? to ([^\r\n`]+?)(?:\.\s+No need|\.\s*$|$)/i);
-            if (mMatch?.[1]) {
-              const parsed = formatDynamicModelName(mMatch[1]);
-              if (parsed) detectedModel = parsed;
-            }
-          }
-
-          if (obj.type === "CHECKPOINT" || obj.content?.includes("{{ CHECKPOINT")) {
-            const cpTokens = countBpeTokens(obj.content || "");
-            runningContextTokens = cpTokens;
-            this.cachedLineTokens.push(cpTokens);
-          } else {
-            let lineTokens = countBpeTokens(obj.content || "");
-            if (obj.thinking) lineTokens += countBpeTokens(obj.thinking);
-            if (Array.isArray(obj.tool_calls)) lineTokens += countBpeTokens(JSON.stringify(obj.tool_calls));
-            runningContextTokens += lineTokens;
-            this.cachedLineTokens.push(lineTokens);
-          }
-        } catch {
-          this.cachedLineTokens.push(0);
-        }
-      }
-
-      this.cachedRunningTokens = runningContextTokens;
-
-      // Record incremental turns for stats
-      if (this.statsManager && this.activeConversationId) {
-        const statsStartIdx = this.lastProcessedPath === this.activeTranscriptPath ? this.lastProcessedLineCount : 0;
-        if (lines.length > statsStartIdx) {
-          let activePromptText = initialPrompt;
-          let activePromptTime = Date.now();
-
-          // Scan backwards to find the latest active user prompt
-          for (let i = lines.length - 1; i >= 0; i--) {
-            const l = lines[i];
-            if (!l) continue;
-            try {
-              const obj = JSON.parse(l) as { source?: string; content?: string; created_at?: string };
-              if (obj.source === "USER_INPUT" || obj.source === "USER_EXPLICIT") {
-                if (obj.created_at) activePromptTime = Date.parse(obj.created_at);
-                if (obj.content) {
-                  const req = obj.content.match(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/i);
-                  activePromptText = (req?.[1] || obj.content).trim().replace(/[\r\n]+/g, " ").slice(0, 80);
-                }
-                break;
-              }
-            } catch { /* ignore */ }
-          }
-
-          let currentOutTurn = 0;
-          let currentTurnCount = 0;
-
-          for (let i = statsStartIdx; i < lines.length; i++) {
-            const l = lines[i];
-            if (!l) continue;
-            try {
-              const obj = JSON.parse(l) as {
-                type?: string;
-                source?: string;
-                content?: string;
-                thinking?: string;
-                tool_calls?: unknown[];
-              };
-
-              if (obj.type === "PLANNER_RESPONSE" || (!obj.type && obj.source === "MODEL")) {
-                currentTurnCount += 1;
-                let outTurn = countBpeTokens(obj.content || "");
-                if (obj.thinking) outTurn += countBpeTokens(obj.thinking);
-                if (Array.isArray(obj.tool_calls)) outTurn += countBpeTokens(JSON.stringify(obj.tool_calls));
-                currentOutTurn += outTurn;
-              }
-            } catch { /* ignore */ }
-          }
-
-          if (currentTurnCount > 0) {
-            const dateObj = new Date(activePromptTime);
-            const dateStr = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, "0")}-${String(dateObj.getDate()).padStart(2, "0")}`;
-            const turnInp = runningContextTokens;
-            const turnHit = Math.max(0, turnInp - BASE_SYSTEM_PROMPT_TOKENS);
-            const turnMiss = Math.min(turnInp, BASE_SYSTEM_PROMPT_TOKENS);
-
-            this.statsManager.recordTokens(
-              dateStr,
-              detectedModel,
-              this.activeConversationId,
-              convTitle,
-              "",
-              turnInp * currentTurnCount,
-              currentOutTurn,
-              turnHit * currentTurnCount,
-              turnMiss * currentTurnCount,
-              activePromptText,
-              activePromptTime,
-              currentTurnCount,
-            );
-          }
-
-          this.lastProcessedLineCount = lines.length;
-          this.lastProcessedPath = this.activeTranscriptPath;
-        }
-      }
-
-      this.activeModel = detectedModel;
       const limit = this.getModelContextLimit(this.activeModel);
+      const contextTokens = genMetrics ? genMetrics.contextTokens : 0;
 
       this.currentUsage = {
-        current: runningContextTokens,
+        current: contextTokens,
         limit,
         model: this.activeModel,
-        percent: limit > 0 ? Math.min(100, Math.round((runningContextTokens / limit) * 100)) : 0,
+        percent: limit > 0 ? Math.min(100, Math.round((contextTokens / limit) * 100)) : 0,
       };
 
       this.onContextChangeEmitter.fire(this.currentUsage);
+
+      // Record completed request blocks with exact gen_metadata token counts
+      if (this.statsManager && this.activeConversationId) {
+        const newTurns = readGenMetadataSince(this.activeConversationId, this.lastProcessedGenIdx);
+
+        for (const block of parsed.completedBlocks) {
+          if (block.endLine > this.lastProcessedLineCount && block.turnCount > 0) {
+            const dateObj = new Date(block.timestamp);
+            const dateStr = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, "0")}-${String(dateObj.getDate()).padStart(2, "0")}`;
+
+            const agg = aggregateBlockTokens(newTurns, block.startLine, block.endLine);
+            const blockModel = agg.model
+              ? (formatDynamicModelName(agg.model) || this.activeModel)
+              : this.activeModel;
+            if (agg.maxGenIdx > this.lastProcessedGenIdx) {
+              this.lastProcessedGenIdx = agg.maxGenIdx;
+            }
+
+            this.statsManager.recordTokens(
+              dateStr,
+              blockModel,
+              this.activeConversationId,
+              convTitle,
+              "",
+              agg.inputTokens,
+              agg.outputTokens,
+              agg.cacheHitTokens,
+              agg.cacheMissTokens,
+              block.promptText,
+              block.timestamp,
+              block.turnCount,
+            );
+          }
+        }
+        this.lastProcessedLineCount = parsed.completedEndLine;
+        this.lastProcessedPath = this.activeTranscriptPath;
+      }
     } catch { /* ignore compute error */ } finally {
       this.isComputing = false;
     }

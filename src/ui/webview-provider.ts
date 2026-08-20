@@ -1,13 +1,24 @@
-import * as os from "node:os";
-import * as path from "node:path";
 import * as vscode from "vscode";
 import type { LogManager } from "../core/log-manager.js";
 import { AutoRunPatcher } from "../core/patcher.js";
 import type { QuotaMonitor } from "../core/quota-monitor.js";
+import { BRAIN_DIR } from "../core/sqlite-utils.js";
 import type { StatsManager } from "../core/stats-manager.js";
 import type { TokenManager } from "../core/token-manager.js";
-import { countBpeTokens } from "../core/usage-tracker.js";
+import type { UsageTracker } from "../core/usage-tracker.js";
 import type { OpenAGConfig } from "../types.js";
+
+type WebviewMessage =
+  | { action: "ready"; payload?: undefined }
+  | { action: "addAccount"; payload?: undefined }
+  | { action: "refreshQuotas"; payload?: undefined }
+  | { action: "toggleAccount"; payload: { email: string; enabled: boolean } }
+  | { action: "refreshAccount"; payload: string }
+  | { action: "removeAccount"; payload: string }
+  | { action: "clearLogs"; payload?: undefined }
+  | { action: "togglePatch"; payload: { id: string; enabled: boolean } }
+  | { action: "updateConfig"; payload: Partial<OpenAGConfig> }
+  | { action: "recalculateStats"; payload?: undefined };
 
 export class WebviewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = "openag.accounts";
@@ -22,6 +33,7 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
     private readonly log: (msg: string) => void,
     private readonly logManager: LogManager,
     private readonly statsManager?: StatsManager,
+    private readonly usageTracker?: UsageTracker,
   ) {}
 
   public resolveWebviewView(webviewView: vscode.WebviewView): void {
@@ -118,7 +130,7 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
   }
 
   private setWebviewMessageListener(webview: vscode.Webview): void {
-    webview.onDidReceiveMessage(async (message: { action: string; payload?: unknown }) => {
+    webview.onDidReceiveMessage(async (message: WebviewMessage) => {
       try {
         switch (message.action) {
           case "ready":
@@ -132,21 +144,20 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
             this.refresh();
             break;
           case "toggleAccount":
-            if (typeof message.payload === "object" && message.payload !== null) {
-              const p = message.payload as { email: string; enabled: boolean };
-              await this.tokenManager.toggleAccountEnabled(p.email, p.enabled);
+            if (message.payload) {
+              await this.tokenManager.toggleAccountEnabled(message.payload.email, message.payload.enabled);
               void this.quotaMonitor.pollAllAccounts();
               this.refresh();
             }
             break;
           case "refreshAccount":
-            if (typeof message.payload === "string") {
+            if (message.payload) {
               await this.quotaMonitor.refreshAccountQuota(message.payload);
               this.refresh();
             }
             break;
           case "removeAccount":
-            if (typeof message.payload === "string") {
+            if (message.payload) {
               await this.tokenManager.removeAccount(message.payload);
               this.refresh();
             }
@@ -156,10 +167,9 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
             this.refresh();
             break;
           case "togglePatch":
-            if (typeof message.payload === "object" && message.payload !== null) {
-              const p = message.payload as { id: string; enabled: boolean };
-              const res = AutoRunPatcher.togglePatch(p.id, p.enabled);
-              this.log(`[Patch ${p.id}] ${res.message}`);
+            if (message.payload) {
+              const res = AutoRunPatcher.togglePatch(message.payload.id, message.payload.enabled);
+              this.log(`[Patch ${message.payload.id}] ${res.message}`);
               if (res.success) {
                 const reload = await vscode.window.showInformationMessage(`OpenAG: ${res.message}`, "Reload Window");
                 if (reload === "Reload Window") void vscode.commands.executeCommand("workbench.action.reloadWindow");
@@ -170,21 +180,21 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
             }
             break;
           case "updateConfig":
-            if (typeof message.payload === "object" && message.payload !== null) {
-              await this.tokenManager.updateConfig(message.payload as Partial<OpenAGConfig>);
+            if (message.payload) {
+              await this.tokenManager.updateConfig(message.payload);
               this.refresh();
             }
             break;
           case "recalculateStats":
             if (this.statsManager) {
-              const brainDir = path.join(os.homedir(), ".gemini", "antigravity-ide", "brain");
-              await this.statsManager.resetAndRecalculate(brainDir, countBpeTokens);
+              await this.statsManager.resetAndRecalculate(BRAIN_DIR);
+              this.usageTracker?.resetProcessedLines();
               this.refresh();
             }
             break;
         }
       } catch (err: unknown) {
-        this.log(`Webview action error: ${err instanceof Error ? err.message : String(err)}`);
+        this.log(`Message handler error: ${err instanceof Error ? err.message : String(err)}`);
       }
     });
   }
@@ -253,7 +263,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); padd
 .cb-lbl { font-size: 8px; color: var(--dim); text-transform: uppercase; font-weight: 600; letter-spacing: 0.3px; }
 .cb-val { font-size: 10.5px; font-weight: 700; font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-.tier-tag { font-size: 8.5px; font-weight: 700; padding: 1px 4px; border-radius: 3px; text-transform: uppercase; background: var(--badge-bg); color: var(--badge-fg); flex-shrink: 0; }
+.tier-tag { font-size: 8.5px; font-weight: 700; padding: 1px 4px; border-radius: 3px; text-transform: uppercase; background: var(--badge-bg); color: var(--badge-fg); flex-shrink: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; }
 .active-tag { font-size: 8.5px; font-weight: 700; padding: 1px 4px; border-radius: 3px; background: rgba(16,185,129,.15); color: var(--success); border: 1px solid rgba(16,185,129,.4); flex-shrink: 0; }
 .dis-tag { font-size: 8.5px; font-weight: 700; padding: 1px 4px; border-radius: 3px; background: rgba(255,255,255,.08); color: var(--dim); flex-shrink: 0; }
 
@@ -312,7 +322,10 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); padd
   </div>
 
   <div class="row">
-    <span style="font-size:10px;color:var(--dim);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="Auto-routes to highest quota account">Auto-routes to highest quota</span>
+    <div style="display:flex;flex-direction:column;gap:1px;flex:1;min-width:0;">
+      <span style="font-size:10px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="Auto-routes to highest quota account">Auto-routes to highest quota</span>
+      <span id="quota-last-refreshed" style="font-size:8.5px;font-family:var(--mono);color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span>
+    </div>
     <div class="btn-row">
       <button class="btn btn-sec" data-action="refreshQuotas" title="Refresh quotas">Refresh</button>
       <button class="btn" data-action="addAccount" title="Add Google Account">+ Add</button>
@@ -460,6 +473,7 @@ var sortConfig = {
 function send(action, payload) { vscode.postMessage({ action: action, payload: payload }); }
 function esc(s) { return s ? String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;") : ""; }
 function fmtNum(n) { return typeof n === "number" ? (n >= 1e6 ? (n/1e6).toFixed(2)+"M" : n >= 1e3 ? (n/1e3).toFixed(1)+"k" : n.toLocaleString()) : "0"; }
+function fmtDateTime(ts) { return ts ? new Date(ts).toLocaleString() : ""; }
 
 function maskEmail(email, index) {
   if (!email) return "";
@@ -643,10 +657,23 @@ function renderAccounts() {
   if (accCountEl) accCountEl.textContent = accs.length + (accs.length === 1 ? " acc" : " accs");
   if (!accs.length) {
     list.innerHTML = '<div class="empty">No accounts in pool.<br>Click <strong>+ Add</strong> or sign in via Antigravity.</div>';
+    var emptyRefEl = document.getElementById("quota-last-refreshed");
+    if (emptyRefEl) emptyRefEl.textContent = "";
     return;
   }
   var quotas = (state && state.quotas && typeof state.quotas === "object") ? state.quotas : {};
   var visibleAccs = (!accountsExpanded && accs.length > 3) ? accs.slice(0, 3) : accs;
+
+  var latestRefresh = 0;
+  for (var k in quotas) {
+    if (quotas[k] && typeof quotas[k].lastUpdated === "number" && quotas[k].lastUpdated > latestRefresh) {
+      latestRefresh = quotas[k].lastUpdated;
+    }
+  }
+  var qRefEl = document.getElementById("quota-last-refreshed");
+  if (qRefEl) {
+    qRefEl.textContent = latestRefresh > 0 ? ("Refreshed: " + fmtDateTime(latestRefresh)) : "";
+  }
 
   var cardsHtml = visibleAccs.map(function(acc, idx) {
     var email = acc.email || "";
@@ -663,6 +690,8 @@ function renderAccounts() {
       return html;
     }).join("") + '</div>';
     var tag = isAct ? '<span class="active-tag">ACTIVE</span>' : isDis ? '<span class="dis-tag">OFF</span>' : '';
+    var updatedStr = q.lastUpdated ? fmtDateTime(q.lastUpdated) : "";
+    var metaHtml = updatedStr ? ('<div class="card-meta" style="margin-top:2px;font-size:8.5px;">Refreshed: ' + esc(updatedStr) + '</div>') : '';
     return '<div class="card ' + (isAct ? "active" : "") + ' ' + (isDis ? "disabled" : "") + '">' +
       '<div class="card-head">' +
         '<div style="display:flex;align-items:center;gap:3px;overflow:hidden;flex:1;min-width:0;">' +
@@ -680,6 +709,7 @@ function renderAccounts() {
         '</div>' +
       '</div>' +
       qHtml +
+      metaHtml +
     '</div>';
   }).join("");
 
@@ -1009,10 +1039,14 @@ function renderStatsPage() {
       var cTimeStr = c.lastActive ? new Date(c.lastActive).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
       var cTurns = c.turnCount || 1;
       var cHitRate = (c.inputTokens && c.inputTokens > 0) ? Math.round(((c.cacheHitTokens || 0) / c.inputTokens) * 100) : 0;
-      var modelTag = c.model || "Gemini";
+      var modelNames = (c.models && typeof c.models === "object") ? Object.keys(c.models).filter(Boolean) : [];
+      if (!modelNames.length && c.model) modelNames = [c.model];
+      if (!modelNames.length) modelNames = ["Gemini"];
+      var fullModelTitle = modelNames.join(", ");
+      var displayModelTag = modelNames.join(" \u2022 ");
       return '<div class="square-card">' +
-        '<div class="card-head" style="align-items:flex-start;">' +
-          '<span class="tier-tag" title="' + esc(modelTag) + '">' + esc(modelTag) + '</span>' +
+        '<div class="card-head" style="align-items:flex-start;overflow:hidden;width:100%;">' +
+          '<span class="tier-tag" title="' + esc(fullModelTitle) + '" style="max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(displayModelTag) + '</span>' +
         '</div>' +
         '<div class="card-title" title="' + esc(c.title || "") + '" style="font-size:9.5px;font-weight:500;color:var(--text);">' + esc(c.title || (c.id ? c.id.slice(0,8) : "Session")) + '</div>' +
         '<div style="display:flex;align-items:baseline;justify-content:space-between;margin:1px 0;">' +

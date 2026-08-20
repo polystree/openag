@@ -3,6 +3,15 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { PatcherStatus, PatchItem } from "../types.js";
 
+export interface PatchResult {
+  success: boolean;
+  message: string;
+}
+
+export interface ProductJson {
+  checksums?: Record<string, string>;
+}
+
 const TAG_AUTORUN = "/*OPENAG:autorun*/";
 
 let cachedAppRoot: string | null = null;
@@ -72,6 +81,7 @@ function getStatus(): PatcherStatus {
 
   let version = "unknown";
   try {
+    // SAFETY: IDE application root package.json for version reading
     const pkg = JSON.parse(fs.readFileSync(path.join(appRoot, "package.json"), "utf8")) as { version?: string };
     version = pkg.version || "unknown";
   } catch { /* ignore */ }
@@ -109,7 +119,7 @@ function getStatus(): PatcherStatus {
   return { supported: true, appRoot, version, patches };
 }
 
-function applyPatches(enabledIds: Set<string>): { success: boolean; message: string } {
+function applyPatches(enabledIds: Set<string>): PatchResult {
   const appRoot = getAppRoot();
   if (!appRoot) return { success: false, message: "Could not locate Antigravity installation path." };
 
@@ -120,12 +130,13 @@ function applyPatches(enabledIds: Set<string>): { success: boolean; message: str
 
   try {
     const productPath = path.join(appRoot, "product.json");
-    let productJson: { checksums?: Record<string, string> } = {};
+    let productJson: ProductJson = {};
     if (fs.existsSync(productPath)) {
       if (!fs.existsSync(`${productPath}.openag-backup`)) {
         fs.copyFileSync(productPath, `${productPath}.openag-backup`);
       }
-      productJson = JSON.parse(fs.readFileSync(productPath, "utf8")) as { checksums?: Record<string, string> };
+      // SAFETY: product.json structure for integrity checksums map
+      productJson = JSON.parse(fs.readFileSync(productPath, "utf8")) as ProductJson;
       if (!productJson.checksums) productJson.checksums = {};
     }
 
@@ -184,12 +195,12 @@ function applyPatches(enabledIds: Set<string>): { success: boolean; message: str
     }
 
     return { success: true, message: "Settings updated successfully! Reload Antigravity window to take effect." };
-  } catch (err) {
-    return { success: false, message: `Failed to update settings: ${String(err)}` };
+  } catch (err: unknown) {
+    return { success: false, message: `Failed to update settings: ${err instanceof Error ? err.message : String(err)}` };
   }
 }
 
-function togglePatch(patchId: string, enable?: boolean): { success: boolean; message: string } {
+function togglePatch(patchId: string, enable?: boolean): PatchResult {
   const status = getStatus();
   const target = status.patches.find((p) => p.id === patchId);
   if (!target) return { success: false, message: `Unknown patch: ${patchId}` };
@@ -209,43 +220,11 @@ function togglePatch(patchId: string, enable?: boolean): { success: boolean; mes
   return applyPatches(currentPatched);
 }
 
-function revertAll(): { success: boolean; message: string } {
-  const appRoot = getAppRoot();
-  if (!appRoot) return { success: false, message: "Could not locate Antigravity installation path." };
-
-  const targets = [
-    path.join("out", "vs", "workbench", "workbench.desktop.main.js"),
-    path.join("out", "jetskiAgent", "main.js"),
-  ];
-
-  try {
-    const productPath = path.join(appRoot, "product.json");
-    if (fs.existsSync(`${productPath}.openag-backup`)) {
-      fs.copyFileSync(`${productPath}.openag-backup`, productPath);
-      fs.unlinkSync(`${productPath}.openag-backup`);
-    }
-
-    for (const rel of targets) {
-      const fullPath = path.join(appRoot, rel);
-      const backupPath = `${fullPath}.openag-backup`;
-      if (fs.existsSync(backupPath)) {
-        fs.copyFileSync(backupPath, fullPath);
-        fs.unlinkSync(backupPath);
-      }
-    }
-
-    return { success: true, message: "All patches reverted. Original Antigravity files restored." };
-  } catch (err) {
-    return { success: false, message: `Failed to revert patches: ${String(err)}` };
-  }
-}
-
 export const AutoRunPatcher = {
   getAppRoot,
   getStatus,
   togglePatch,
   applyPatches,
-  revertAll,
   apply: () => togglePatch("autorun", true),
   revert: () => togglePatch("autorun", false),
 };
