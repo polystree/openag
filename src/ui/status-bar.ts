@@ -121,7 +121,8 @@ export class StatusBarHUD {
       }
     }
     if (this.currentContext?.limit) {
-      md.appendMarkdown(`---\n\n$(server-process) **Context**: ${this.currentContext.current.toLocaleString()} / ${this.currentContext.limit.toLocaleString()} (${this.currentContext.percent}%)\n\n`);
+      const modelLabel = this.currentContext.model ? ` (${this.currentContext.model})` : "";
+      md.appendMarkdown(`---\n\n$(server-process) **Context**${modelLabel}: ${this.currentContext.current.toLocaleString()} / ${this.currentContext.limit.toLocaleString()} (${this.currentContext.percent}%)\n\n`);
     }
     md.appendMarkdown("---\n*Click to switch active account or trigger actions*");
     this.item.tooltip = md;

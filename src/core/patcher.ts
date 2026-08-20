@@ -125,13 +125,15 @@ function apply(): { success: boolean; message: string } {
           const cbEndMatch = afterAnchor.match(/\},\s*\[[^\]]*\]\s*\)\s*;/);
           if (cbEndMatch && cbEndMatch.index !== undefined) {
             const cbEndPos = idx + cbEndMatch.index + cbEndMatch[0].length;
-            const patchCode = `${PATCH_TAG};((typeof ${effectId}==="function"?${effectId}:null)||(typeof React!=="undefined"?React.useEffect:null))?.(()=>{try{let _h=(typeof ${hookId}==="function"?${hookId}:null);let _st=_h?.()?.stepHandler;if((_st?.terminalAutoExecutionPolicy===3||_st?.terminalAutoExecutionPolicy==="EAGER")&&!_st?.secureModeEnabled)${cbVar}(!0)}catch{}},[${cbVar}]);`;
+            const patchCode = `${PATCH_TAG};((typeof ${effectId}==="function"?${effectId}:null)||(typeof React!=="undefined"?React.useEffect:null))?.(()=>{try{let _h=(typeof ${hookId}==="function"?${hookId}:null);let _st=_h?.()?.stepHandler;if(!_st?.secureModeEnabled)${cbVar}(!0)}catch{}},[${cbVar}]);`;
             content = content.slice(0, cbEndPos) + patchCode + content.slice(cbEndPos);
             patched = true;
             break;
           }
         }
       }
+
+      content = content.replace(/label:"Always run",isAllowed:[a-zA-Z0-9_$]+&&![a-zA-Z0-9_$]+/g, 'label:"Always run",isAllowed:!0');
 
       if (patched) {
         fs.writeFileSync(fullPath, content, "utf8");

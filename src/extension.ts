@@ -101,33 +101,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<unknow
     }
   };
 
-  void syncIdeAuth();
-  const syncTimer = setInterval(() => void syncIdeAuth(), 10000);
-  let docChangeDebounce: NodeJS.Timeout | null = null;
-  const updateEditorContext = () => {
-    const editor = vscode.window.activeTextEditor;
-    if (!editor) return;
-    const doc = editor.document;
-    const textLen = doc.getText().length;
-    if (textLen === 0) return;
-    const approxTokens = Math.max(1, Math.round(textLen / 4));
-    usageTracker?.updateContextUsage(undefined, approxTokens);
+  const updateWorkspacePaths = () => {
+    const folders = vscode.workspace.workspaceFolders?.map((f) => f.uri.fsPath || f.uri.toString()) || [];
+    usageTracker?.setWorkspacePaths(folders);
   };
 
-  updateEditorContext();
+  updateWorkspacePaths();
+  void syncIdeAuth();
+  const syncTimer = setInterval(() => void syncIdeAuth(), 10000);
 
   context.subscriptions.push(
-    { dispose: () => { clearInterval(syncTimer); if (docChangeDebounce) clearTimeout(docChangeDebounce); } },
-    vscode.window.onDidChangeWindowState((s) => { if (s.focused) void syncIdeAuth(); }),
-    vscode.window.onDidChangeActiveTextEditor(() => {
-      void syncIdeAuth();
-      updateEditorContext();
+    { dispose: () => clearInterval(syncTimer) },
+    vscode.window.onDidChangeWindowState((s) => {
+      if (s.focused) {
+        void syncIdeAuth();
+        usageTracker?.refresh();
+      }
     }),
-    vscode.workspace.onDidChangeTextDocument((e) => {
-      if (vscode.window.activeTextEditor?.document === e.document) updateEditorContext();
-      if (docChangeDebounce) return;
-      docChangeDebounce = setTimeout(() => { docChangeDebounce = null; void syncIdeAuth(); }, 3000);
-    }),
+    vscode.workspace.onDidChangeWorkspaceFolders(() => updateWorkspacePaths()),
   );
 
   const registerAuthAccount = async (res: { email: string; tokens: { accessToken: string; refreshToken: string; expiryDateSeconds: number } }) => {
