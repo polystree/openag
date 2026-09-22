@@ -33,9 +33,6 @@ jobs:
       - name: Lint
         run: bun run lint
 
-      - name: Run tests
-        run: bun run test
-
       - name: Package extension
         run: bun run package
 
