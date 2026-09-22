@@ -1,4 +1,7 @@
+import * as fs from "node:fs";
 import * as http from "node:http";
+import * as os from "node:os";
+import * as path from "node:path";
 import type { QuotaMonitor } from "./quota-monitor.js";
 import type { TokenManager } from "./token-manager.js";
 
@@ -116,6 +119,38 @@ export class HookServer {
         this.server.close();
       } catch { /* ignore */ }
       this.server = null;
+    }
+  }
+
+  public static registerGlobalHook(extensionPath: string): void {
+    const configDir = path.join(os.homedir(), ".gemini", "config");
+    const hooksConfigFile = path.join(configDir, "hooks.json");
+    if (!fs.existsSync(configDir)) fs.mkdirSync(configDir, { recursive: true });
+
+    let hooks: Record<string, unknown> = {};
+    if (fs.existsSync(hooksConfigFile)) {
+      try {
+        hooks = JSON.parse(fs.readFileSync(hooksConfigFile, "utf8")) as Record<string, unknown>;
+      } catch { /* ignore parse error */ }
+    }
+
+    const hookScriptPath = path.join(extensionPath, "dist", "hook.js");
+    hooks["openag-auto-rotate"] = {
+      enabled: true,
+      PreInvocation: [{ type: "command", command: `node "${hookScriptPath}"`, timeout: 5 }],
+    };
+
+    fs.writeFileSync(hooksConfigFile, JSON.stringify(hooks, null, 2), "utf8");
+  }
+
+  public static removeGlobalHook(): void {
+    const hooksConfigFile = path.join(os.homedir(), ".gemini", "config", "hooks.json");
+    if (fs.existsSync(hooksConfigFile)) {
+      try {
+        const hooks = JSON.parse(fs.readFileSync(hooksConfigFile, "utf8")) as Record<string, unknown>;
+        delete hooks["openag-auto-rotate"];
+        fs.writeFileSync(hooksConfigFile, JSON.stringify(hooks, null, 2), "utf8");
+      } catch { /* ignore */ }
     }
   }
 }

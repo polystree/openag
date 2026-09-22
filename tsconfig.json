@@ -4,7 +4,7 @@
     "moduleResolution": "NodeNext",
     "target": "ES2022",
     "lib": ["ES2022", "DOM"],
-    "types": ["node", "bun"],
+    "types": ["node"],
     "sourceMap": true,
     "strict": true,
     "rootDir": "src",
@@ -13,7 +13,9 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "noUncheckedIndexedAccess": true,
-    "noImplicitOverride": true
+    "noImplicitOverride": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist"]

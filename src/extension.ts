@@ -1,11 +1,7 @@
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
 import * as vscode from "vscode";
 import { HookServer } from "./core/hook-server.js";
 import { LogManager } from "./core/log-manager.js";
 import { OAuthFlow } from "./core/oauth-flow.js";
-import { AutoRunPatcher } from "./core/patcher.js";
 import { QuotaMonitor } from "./core/quota-monitor.js";
 import { StatsManager } from "./core/stats-manager.js";
 import { TokenManager } from "./core/token-manager.js";
@@ -13,6 +9,7 @@ import { UsageTracker } from "./core/usage-tracker.js";
 import { USSBridge } from "./core/uss-bridge.js";
 import { StatusBarHUD } from "./ui/status-bar.js";
 import { WebviewProvider } from "./ui/webview-provider.js";
+import type { Account, AccountQuota } from "./types.js";
 
 let outputChannel: vscode.OutputChannel;
 let tokenManager: TokenManager | null = null;
@@ -49,8 +46,75 @@ export interface ExtensionExports {
   quotaMonitor: QuotaMonitor;
 }
 
+interface QuickStatusItem extends vscode.QuickPickItem {
+  email?: string;
+  isAction?: boolean;
+  action?: () => void;
+}
+
+function buildQuickStatusItems(
+  accounts: Account[],
+  activeEmail: string,
+  quotas: Record<string, AccountQuota | undefined>,
+): QuickStatusItem[] {
+  const resetTimeStr = (iso?: string) => {
+    if (!iso) return "";
+    const diff = new Date(iso).getTime() - Date.now();
+    if (diff <= 0) return "ready";
+    const mins = Math.floor(diff / 60000);
+    const hrs = Math.floor(mins / 60);
+    const remMins = mins % 60;
+    const rel = hrs > 0 ? `${hrs}h ${remMins}m` : `${remMins}m`;
+    const clock = new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+    return `${rel} (${clock})`;
+  };
+
+  const items: QuickStatusItem[] = accounts.map((acc): QuickStatusItem => {
+    const isAct = acc.email.toLowerCase() === activeEmail.toLowerCase();
+    const q = quotas[acc.email.toLowerCase()];
+    const fams = q?.families || [];
+    const geminiFam = fams.find((f: { key: string }) => f.key === "gemini");
+    const claudeFam = fams.find((f: { key: string }) => f.key === "claude");
+
+    const gemini5h = geminiFam?.limit5h?.percent ?? geminiFam?.percent ?? 100;
+    const claude5h = claudeFam?.limit5h?.percent ?? claudeFam?.percent ?? 100;
+
+    const gReset = resetTimeStr(geminiFam?.limit5h?.resetTime || geminiFam?.resetTime);
+    const cReset = resetTimeStr(claudeFam?.limit5h?.resetTime || claudeFam?.resetTime);
+
+    const healthStr = acc.health && acc.health !== "healthy" ? ` | ⚠️ ${acc.health.toUpperCase()}` : "";
+    const desc = `[${(acc.tier || "pro").toUpperCase()}] ${(acc.affinity || "all").toUpperCase()} · ${(acc.role || "primary").toUpperCase()}${isAct ? " · [ACTIVE]" : ""}${healthStr}`;
+    const detail = `Gemini: ${gemini5h}%${gReset ? ` (resets ${gReset})` : ""} | Claude: ${claude5h}%${cReset ? ` (resets ${cReset})` : ""}`;
+
+    return {
+      label: `$(account) ${acc.alias ? `${acc.alias} (${acc.email})` : acc.email}`,
+      description: desc,
+      detail,
+      email: acc.email,
+    };
+  });
+
+  items.push(
+    {
+      label: "$(refresh) Refresh All Quotas",
+      description: "Poll latest quotas from Google Cloud",
+      isAction: true,
+      action: () => void vscode.commands.executeCommand("openag.refreshQuotas"),
+    },
+    {
+      label: "$(add) Add Google Account",
+      description: "Sign in with another Google account",
+      isAction: true,
+      action: () => void vscode.commands.executeCommand("openag.addAccount"),
+    },
+  );
+
+  return items;
+}
+
 export function activate(context: vscode.ExtensionContext): ExtensionExports {
   outputChannel = vscode.window.createOutputChannel("OpenAG");
+
   logManager = new LogManager(context);
   statsManager = new StatsManager(context, log);
   usageTracker = new UsageTracker(statsManager);
@@ -237,28 +301,6 @@ export function activate(context: vscode.ExtensionContext): ExtensionExports {
       await quotaMonitor?.pollAllAccounts();
       vscode.window.showInformationMessage("OpenAG: Quotas refreshed");
     }),
-    vscode.commands.registerCommand("openag.applyAutoRunFix", async () => {
-      const res = AutoRunPatcher.apply();
-      log(`[AutoRun Fix] ${res.message}`);
-      if (res.success) {
-        const reload = await vscode.window.showInformationMessage(`OpenAG: ${res.message}`, "Reload Window");
-        if (reload === "Reload Window") void vscode.commands.executeCommand("workbench.action.reloadWindow");
-      } else {
-        void vscode.window.showErrorMessage(`OpenAG: ${res.message}`);
-      }
-      webviewProvider?.refresh();
-    }),
-    vscode.commands.registerCommand("openag.revertAutoRunFix", async () => {
-      const res = AutoRunPatcher.revert();
-      log(`[AutoRun Fix] ${res.message}`);
-      if (res.success) {
-        const reload = await vscode.window.showInformationMessage(`OpenAG: ${res.message}`, "Reload Window");
-        if (reload === "Reload Window") void vscode.commands.executeCommand("workbench.action.reloadWindow");
-      } else {
-        void vscode.window.showErrorMessage(`OpenAG: ${res.message}`);
-      }
-      webviewProvider?.refresh();
-    }),
     vscode.commands.registerCommand("openag.exportPool", async () => {
       try {
         if (!tokenManager || tokenManager.getAccounts().length === 0) {
@@ -327,61 +369,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionExports {
           return;
         }
 
-        const quotas = quotaMonitor.getAllQuotas();
-        const activeEmail = tokenManager.getActiveEmail();
-
-        const items: (vscode.QuickPickItem & { email?: string; isAction?: boolean; action?: () => void })[] = accounts.map((acc) => {
-          const isAct = acc.email.toLowerCase() === activeEmail.toLowerCase();
-          const q = quotas[acc.email.toLowerCase()];
-          const fams = q?.families || [];
-          const geminiFam = fams.find((f) => f.key === "gemini");
-          const claudeFam = fams.find((f) => f.key === "claude");
-
-          const gemini5h = geminiFam?.limit5h?.percent ?? geminiFam?.percent ?? 100;
-          const claude5h = claudeFam?.limit5h?.percent ?? claudeFam?.percent ?? 100;
-
-          const resetTimeStr = (iso?: string) => {
-            if (!iso) return "";
-            const d = new Date(iso);
-            const diff = d.getTime() - Date.now();
-            if (diff <= 0) return "ready";
-            const mins = Math.floor(diff / 60000);
-            const hrs = Math.floor(mins / 60);
-            const remMins = mins % 60;
-            const rel = hrs > 0 ? `${hrs}h ${remMins}m` : `${remMins}m`;
-            const clock = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
-            return `${rel} (${clock})`;
-          };
-
-          const gReset = resetTimeStr(geminiFam?.limit5h?.resetTime || geminiFam?.resetTime);
-          const cReset = resetTimeStr(claudeFam?.limit5h?.resetTime || claudeFam?.resetTime);
-
-          const healthStr = acc.health && acc.health !== "healthy" ? ` | ⚠️ ${acc.health.toUpperCase()}` : "";
-          const desc = `[${(acc.tier || "pro").toUpperCase()}] ${(acc.affinity || "all").toUpperCase()} · ${(acc.role || "primary").toUpperCase()}${isAct ? " · [ACTIVE]" : ""}${healthStr}`;
-          const detail = `Gemini: ${gemini5h}%${gReset ? ` (resets ${gReset})` : ""} | Claude: ${claude5h}%${cReset ? ` (resets ${cReset})` : ""}`;
-
-          return {
-            label: `$(account) ${acc.alias ? `${acc.alias} (${acc.email})` : acc.email}`,
-            description: desc,
-            detail,
-            email: acc.email,
-          };
-        });
-
-        items.push({
-          label: "$(refresh) Refresh All Quotas",
-          description: "Poll latest quotas from Google Cloud",
-          isAction: true,
-          action: () => void vscode.commands.executeCommand("openag.refreshQuotas"),
-        });
-
-        items.push({
-          label: "$(add) Add Google Account",
-          description: "Sign in with another Google account",
-          isAction: true,
-          action: () => void vscode.commands.executeCommand("openag.addAccount"),
-        });
-
+        const items = buildQuickStatusItems(accounts, tokenManager.getActiveEmail(), quotaMonitor.getAllQuotas());
         const selected = await vscode.window.showQuickPick(items, {
           title: "OpenAG: Accounts & Quotas",
           placeHolder: "Select an account to switch or choose an action",
@@ -389,62 +377,28 @@ export function activate(context: vscode.ExtensionContext): ExtensionExports {
           matchOnDetail: true,
         });
 
-        if (selected) {
-          if (selected.isAction && selected.action) {
-            selected.action();
-          } else if (selected.email) {
-            await tokenManager.selectAccount(selected.email);
-            void vscode.window.showInformationMessage(`OpenAG: Switched active account to ${selected.email}`);
-          }
+        if (selected?.isAction && selected.action) {
+          selected.action();
+        } else if (selected?.email) {
+          await tokenManager.selectAccount(selected.email);
+          void vscode.window.showInformationMessage(`OpenAG: Switched active account to ${selected.email}`);
         }
       } catch (e: unknown) {
         void vscode.window.showErrorMessage(`OpenAG: Quick Status error - ${e instanceof Error ? e.message : String(e)}`);
       }
     }),
-    vscode.commands.registerCommand("openag.installAntigravityHook", async () => {
+    vscode.commands.registerCommand("openag.installAntigravityHook", () => {
       try {
-        const configDir = path.join(os.homedir(), ".gemini", "config");
-        const hooksConfigFile = path.join(configDir, "hooks.json");
-        if (!fs.existsSync(configDir)) fs.mkdirSync(configDir, { recursive: true });
-
-        let hooks: Record<string, unknown> = {};
-        if (fs.existsSync(hooksConfigFile)) {
-          try {
-            // SAFETY: Parse existing JSON hooks configuration
-            hooks = JSON.parse(fs.readFileSync(hooksConfigFile, "utf8")) as Record<string, unknown>;
-          } catch { /* ignore parse error */ }
-        }
-
-        const hookScriptPath = path.join(context.extensionPath, "dist", "hook.js");
-        const cmd = `node "${hookScriptPath}"`;
-
-        hooks["openag-auto-rotate"] = {
-          enabled: true,
-          PreInvocation: [
-            {
-              type: "command",
-              command: cmd,
-              timeout: 5,
-            },
-          ],
-        };
-
-        fs.writeFileSync(hooksConfigFile, JSON.stringify(hooks, null, 2), "utf8");
+        HookServer.registerGlobalHook(context.extensionPath);
         void vscode.window.showInformationMessage("OpenAG: PreInvocation hook registered in ~/.gemini/config/hooks.json");
       } catch (err: unknown) {
         void vscode.window.showErrorMessage(`OpenAG: Failed to register hook: ${err instanceof Error ? err.message : String(err)}`);
       }
     }),
-    vscode.commands.registerCommand("openag.removeAntigravityHook", async () => {
+    vscode.commands.registerCommand("openag.removeAntigravityHook", () => {
       try {
-        const hooksConfigFile = path.join(os.homedir(), ".gemini", "config", "hooks.json");
-        if (fs.existsSync(hooksConfigFile)) {
-          // SAFETY: Parse existing JSON hooks configuration
-          const hooks = JSON.parse(fs.readFileSync(hooksConfigFile, "utf8")) as Record<string, unknown>;
-          delete hooks["openag-auto-rotate"];
-          fs.writeFileSync(hooksConfigFile, JSON.stringify(hooks, null, 2), "utf8");
-          void vscode.window.showInformationMessage("OpenAG: PreInvocation hook removed from ~/.gemini/config/hooks.json");
-        }
+        HookServer.removeGlobalHook();
+        void vscode.window.showInformationMessage("OpenAG: PreInvocation hook removed from ~/.gemini/config/hooks.json");
       } catch (err: unknown) {
         void vscode.window.showErrorMessage(`OpenAG: Failed to remove hook: ${err instanceof Error ? err.message : String(err)}`);
       }

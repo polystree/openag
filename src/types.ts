@@ -111,23 +111,6 @@ export interface OAuthTokens {
   isGcpTos?: boolean;
 }
 
-export interface PatchItem {
-  id: string;
-  name: string;
-  description: string;
-  isPatched: boolean;
-  canApply: boolean;
-  warning?: string;
-}
-
-export interface PatcherStatus {
-  supported: boolean;
-  appRoot: string | null;
-  version: string;
-  error?: string;
-  patches: PatchItem[];
-}
-
 export interface TokenBucket {
   inputTokens: number;
   outputTokens: number;
@@ -214,9 +197,6 @@ export enum OpenAGErrorCode {
   AUTH_CREDENTIALS_MISSING = "AUTH_CREDENTIALS_MISSING",
   AUTH_INVALID_PASSPHRASE = "AUTH_INVALID_PASSPHRASE",
   AUTH_CORRUPTED_POOL = "AUTH_CORRUPTED_POOL",
-  PATCHER_INSTALL_NOT_FOUND = "PATCHER_INSTALL_NOT_FOUND",
-  PATCHER_WRITE_FAILED = "PATCHER_WRITE_FAILED",
-  PATCHER_PATTERN_MISMATCH = "PATCHER_PATTERN_MISMATCH",
   DATABASE_READ_ERROR = "DATABASE_READ_ERROR",
   QUOTA_FETCH_FAILED = "QUOTA_FETCH_FAILED",
   QUOTA_EXHAUSTED = "QUOTA_EXHAUSTED",
@@ -240,13 +220,6 @@ export class AuthError extends OpenAGError {
   constructor(message: string, code: OpenAGErrorCode, cause?: unknown) {
     super(message, code, cause);
     this.name = "AuthError";
-  }
-}
-
-export class PatcherError extends OpenAGError {
-  constructor(message: string, code: OpenAGErrorCode, cause?: unknown) {
-    super(message, code, cause);
-    this.name = "PatcherError";
   }
 }
 

@@ -1,6 +1,5 @@
 import * as vscode from "vscode";
 import type { LogManager } from "../core/log-manager.js";
-import { AutoRunPatcher } from "../core/patcher.js";
 import type { QuotaMonitor } from "../core/quota-monitor.js";
 import { BRAIN_DIR } from "../core/sqlite-utils.js";
 import type { StatsManager } from "../core/stats-manager.js";
@@ -18,7 +17,6 @@ type WebviewMessage =
   | { action: "refreshAccount"; payload: string }
   | { action: "removeAccount"; payload: string }
   | { action: "clearLogs"; payload?: undefined }
-  | { action: "togglePatch"; payload: { id: string; enabled: boolean } }
   | { action: "updateConfig"; payload: Partial<OpenAGConfig> }
   | { action: "recalculateStats"; payload?: undefined };
 
@@ -71,7 +69,6 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
     const quotas = this.quotaMonitor.getAllQuotas();
     const config = this.tokenManager.getConfig();
     const logs = this.logManager.getLogs();
-    const patcher = AutoRunPatcher.getStatus();
     const todayStats = this.statsManager?.getTodayStats() || {
       date: new Date().toISOString().slice(0, 10),
       inputTokens: 0,
@@ -86,8 +83,8 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
     const dailyStats = this.statsManager?.getDailyStats(7) || [];
     const weeklyStats = this.statsManager?.getWeeklyStats(4) || [];
     const monthlyStats = this.statsManager?.getMonthlyStats(12) || [];
-    const conversationsList = this.statsManager?.getConversationsList(100) || [];
-    const requestsList = this.statsManager?.getRequestsList(100) || [];
+    const conversationsList = this.statsManager?.getConversationsList(40) || [];
+    const requestsList = this.statsManager?.getRequestsList(40) || [];
     const allTimeSummary = this.statsManager?.getAllTimeSummary() || {
       inputTokens: 0,
       outputTokens: 0,
@@ -104,7 +101,6 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
       quotas,
       config,
       logs,
-      patcher,
       stats: {
         today: todayStats,
         hourly: hourlyStats,
@@ -191,19 +187,6 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
             this.logManager.clear();
             this.refresh();
             break;
-          case "togglePatch":
-            if (message.payload) {
-              const res = AutoRunPatcher.togglePatch(message.payload.id, message.payload.enabled);
-              this.log(`[Patch ${message.payload.id}] ${res.message}`);
-              if (res.success) {
-                const reload = await vscode.window.showInformationMessage(`OpenAG: ${res.message}`, "Reload Window");
-                if (reload === "Reload Window") void vscode.commands.executeCommand("workbench.action.reloadWindow");
-              } else {
-                void vscode.window.showErrorMessage(`OpenAG: ${res.message}`);
-              }
-              this.refresh();
-            }
-            break;
           case "updateConfig":
             if (message.payload) {
               await this.tokenManager.updateConfig(message.payload);
@@ -278,13 +261,11 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); padd
 .tab-btn:hover { color: var(--text); background: var(--hover); }
 .tab-btn.active { background: var(--accent); color: #fff; }
 
-.card { background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; display: flex; flex-direction: column; gap: 5px; min-width: 0; contain: content; }
 .card.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
-.card.disabled { opacity: .55; }
 .card-head { display: flex; align-items: center; justify-content: space-between; gap: 4px; min-width: 0; }
-.card-title { font-size: 11px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; user-select: text; }
-.card-desc { font-size: 9.5px; color: var(--dim); line-height: 1.35; }
-.card-warn { font-size: 9px; color: var(--warn); line-height: 1.25; margin-top: 2px; }
+.card-title { font-size: 11px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; user-select: text; }
+.card-head .card-title { flex: 1; }
 
 .card-meta { font-size: 9px; font-family: var(--mono); color: var(--dim); display: flex; align-items: center; gap: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: -1px; }
 .card-breakdown { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px; background: transparent; border: none; padding: 0; margin-top: 1px; }
@@ -301,8 +282,8 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); padd
 .warn-tag { font-size: 8px; font-weight: 700; font-family: var(--mono); padding: 1px 4px; border-radius: 3px; background: rgba(245,158,11,.15); color: var(--warn); border: 1px solid rgba(245,158,11,.4); flex-shrink: 0; }
 
 .quota-row { display: flex; align-items: center; justify-content: space-between; font-size: 10px; gap: 4px; min-width: 0; }
-.progress-bg { flex: 1; height: 5px; background: rgba(255,255,255,.1); border-radius: 3px; overflow: hidden; min-width: 20px; }
-.progress-fill { height: 100%; background: var(--accent); border-radius: 3px; transition: width .3s; }
+.progress-bg { position: relative; flex: 1; height: 5px; background: rgba(255,255,255,.1); border-radius: 3px; overflow: hidden; min-width: 20px; }
+.progress-fill { height: 100%; width: 100%; transform-origin: 0% 50%; will-change: transform; transition: transform .25s cubic-bezier(0.4, 0, 0.2, 1); background: var(--accent); border-radius: 3px; }
 .progress-fill.warn { background: var(--warn); }
 .progress-fill.err { background: var(--danger); }
 .reset-tag { font-size: 8.5px; font-family: var(--mono); padding: 1px 3px; border-radius: 3px; background: rgba(255,255,255,.06); color: var(--dim); white-space: nowrap; flex-shrink: 0; }
@@ -332,8 +313,8 @@ g.bar-group:hover rect { filter: brightness(1.15); }
 .stat-lbl { font-size: 9px; color: var(--dim); }
 
 .scroll-box { display: flex; flex-direction: column; gap: 5px; max-height: 220px; overflow-y: auto; overflow-x: hidden; padding-right: 1px; contain: content; will-change: scroll-position; }
-.log-scroll { display: flex; flex-direction: column; gap: 5px; max-height: 24vh; overflow-y: auto; overflow-x: hidden; padding-right: 1px; }
-.log-card { background: var(--card); border: 1px solid var(--border); border-radius: 5px; padding: 5px 7px; display: flex; flex-direction: column; gap: 3px; min-width: 0; user-select: text; }
+.log-scroll { display: flex; flex-direction: column; gap: 5px; max-height: 24vh; overflow-y: auto; overflow-x: hidden; padding-right: 1px; contain: content; will-change: scroll-position; }
+.log-card { background: var(--card); border: 1px solid var(--border); border-radius: 5px; padding: 5px 7px; display: flex; flex-direction: column; gap: 3px; min-width: 0; user-select: text; contain: content; content-visibility: auto; contain-intrinsic-size: 0 42px; }
 .log-card * { user-select: text; }
 .log-meta { display: flex; align-items: center; justify-content: space-between; gap: 4px; font-size: 9px; color: var(--dim); }
 .log-msg { font-size: 10px; line-height: 1.4; word-break: normal; overflow-wrap: anywhere; }
@@ -345,8 +326,9 @@ g.bar-group:hover rect { filter: brightness(1.15); }
 .chart-scroll-box::-webkit-scrollbar { height: 4px; }
 .chart-scroll-box::-webkit-scrollbar-thumb { background: rgba(255,255,255,.18); border-radius: 2px; }
 .chart-svg { height: 145px; overflow: visible; display: block; }
-.h-scroll-box { display: flex; flex-direction: row; gap: 6px; overflow-x: auto; overflow-y: hidden; padding: 2px 1px 6px 1px; scrollbar-width: thin; -webkit-overflow-scrolling: touch; }
-.square-card { flex: 0 0 172px; width: 172px; background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 7px 8px; display: flex; flex-direction: column; gap: 4px; user-select: text; contain: content; }
+.h-scroll-box { display: flex; flex-direction: row; gap: 6px; overflow-x: auto; overflow-y: hidden; padding: 2px 1px 6px 1px; scrollbar-width: thin; -webkit-overflow-scrolling: touch; will-change: scroll-position; }
+.square-card { flex: 0 0 168px; width: 168px; background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 7px 8px; display: flex; flex-direction: column; gap: 3px; user-select: text; contain: content; }
+.square-card .card-title { flex: 0 0 auto; margin: 1px 0 2px 0; }
 .empty { padding: 12px; text-align: center; color: var(--dim); font-size: 10.5px; }
 </style></head><body>
 
@@ -388,9 +370,6 @@ g.bar-group:hover rect { filter: brightness(1.15); }
 
   <div class="sec-head">Token Usage Statistics</div>
   <div id="stats-widget"></div>
-
-  <div class="sec-head">IDE Enhancements & Patches</div>
-  <div id="patch-list" style="display:flex;flex-direction:column;gap:5px;"></div>
 
   <div class="sec-head">
     <span>Event Stream</span>
@@ -562,27 +541,30 @@ document.addEventListener("click", function(e) {
         selectedBarIndex = bIdx;
         selectedBarLabel = target.getAttribute("data-label") || null;
       }
-      renderStatsPage();
+      renderStatsPage(true);
     }
   } else if (action === "clearBarFilter") {
     selectedBarIndex = null;
     selectedBarLabel = null;
-    renderStatsPage();
+    renderStatsPage(true);
   } else if (action === "toggleHideEmail") {
     hideEmail = !hideEmail;
     var btn = document.getElementById("btn-hide-email");
     if (btn) btn.textContent = hideEmail ? "Show Email" : "Hide Email";
     send("updateConfig", { hideEmail: hideEmail });
+    lastAccountsFp = "";
+    lastLogHideEmail = null;
     renderAccounts();
     renderLogs();
   } else if (action === "toggleExpandAccounts") {
     accountsExpanded = !accountsExpanded;
+    lastAccountsFp = "";
     renderAccounts();
   } else if (action === "toggleSortDir") {
     var sec = target.getAttribute("data-section");
     if (sec && sortConfig[sec]) {
       sortConfig[sec].dir = sortConfig[sec].dir === "desc" ? "asc" : "desc";
-      renderStatsPage();
+      renderStatsPage(true);
     }
   } else if (action === "toggleAffinity") {
     var affEmail = target.getAttribute("data-email");
@@ -626,12 +608,10 @@ document.addEventListener("change", function(e) {
     var sec = target.getAttribute("data-section");
     if (sec && sortConfig[sec]) {
       sortConfig[sec].field = target.value;
-      renderStatsPage();
+      renderStatsPage(true);
     }
   } else if (action === "toggleAccount") {
     send("toggleAccount", { email: target.getAttribute("data-email"), enabled: target.checked });
-  } else if (action === "togglePatch") {
-    send("togglePatch", { id: target.getAttribute("data-patch-id"), enabled: target.checked });
   } else if (action === "toggleEnabled") {
     send("updateConfig", { enabled: target.checked });
   } else if (action === "changeStrategy") {
@@ -639,30 +619,55 @@ document.addEventListener("change", function(e) {
   }
 });
 
-document.addEventListener("wheel", function(e) {
-  var hScroll = e.target && e.target.closest ? e.target.closest(".h-scroll-box, .chart-scroll-box") : null;
-  if (hScroll) {
-    if (Math.abs(e.deltaY) > Math.abs(e.deltaX) && e.deltaY !== 0) {
-      hScroll.scrollLeft += e.deltaY;
-      e.preventDefault();
+var viewStatsEl = document.getElementById("view-stats");
+if (viewStatsEl) {
+  viewStatsEl.addEventListener("wheel", function(e) {
+    var hScroll = e.target && e.target.closest ? e.target.closest(".h-scroll-box, .chart-scroll-box") : null;
+    if (hScroll && Math.abs(e.deltaY) > Math.abs(e.deltaX) && e.deltaY !== 0) {
+      var canScrollRight = e.deltaY > 0 && (hScroll.scrollLeft + hScroll.clientWidth < hScroll.scrollWidth - 4);
+      var canScrollLeft = e.deltaY < 0 && hScroll.scrollLeft > 4;
+      if (canScrollRight || canScrollLeft) {
+        hScroll.scrollLeft += e.deltaY;
+        e.preventDefault();
+      }
     }
-  }
-}, { passive: false });
+  }, { passive: false });
+}
+
+var pendingRender = false;
+function scheduleRender() {
+  if (pendingRender) return;
+  pendingRender = true;
+  requestAnimationFrame(function() {
+    pendingRender = false;
+    render();
+  });
+}
 
 window.addEventListener("message", function(e) {
   if (e.data && e.data.type === "state" && e.data.data) {
     state = e.data.data;
-    render();
+    scheduleRender();
   }
 });
 
+var shouldScrollChart = true;
 function navTo(view) {
   currentView = view;
   var homeEl = document.getElementById("view-home");
   var statsEl = document.getElementById("view-stats");
   if (homeEl) homeEl.style.display = view === "home" ? "flex" : "none";
   if (statsEl) statsEl.style.display = view === "stats" ? "flex" : "none";
-  if (view === "stats") renderStatsPage();
+  if (view === "home") {
+    lastAccountsFp = "";
+    lastStatsWidgetFp = "";
+    renderAccounts();
+    renderStatsWidget();
+    renderLogs();
+  } else if (view === "stats") {
+    shouldScrollChart = true;
+    renderStatsPage(true);
+  }
 }
 
 function updateTabStyles() {
@@ -680,8 +685,9 @@ function setStatsRange(range) {
   statsRange = range;
   selectedBarIndex = null;
   selectedBarLabel = null;
+  shouldScrollChart = true;
   updateTabStyles();
-  renderStatsPage();
+  renderStatsPage(true);
 }
 
 function fmtTime(s) {
@@ -700,11 +706,13 @@ function fmtTime(s) {
 function render() {
   try {
     if (state && state.config) {
-      if (document.getElementById("cfg-enabled")) {
-        document.getElementById("cfg-enabled").checked = state.config.enabled !== false;
+      var cfgEnabled = document.getElementById("cfg-enabled");
+      if (cfgEnabled) {
+        cfgEnabled.checked = state.config.enabled !== false;
       }
-      if (document.getElementById("cfg-strategy")) {
-        document.getElementById("cfg-strategy").value = state.config.rotationStrategy || "auto_highest";
+      var cfgStrat = document.getElementById("cfg-strategy");
+      if (cfgStrat) {
+        cfgStrat.value = state.config.rotationStrategy || "auto_highest";
       }
       if (typeof state.config.hideEmail === "boolean") {
         hideEmail = state.config.hideEmail;
@@ -712,11 +720,14 @@ function render() {
     }
     var btn = document.getElementById("btn-hide-email");
     if (btn) btn.textContent = hideEmail ? "Show Email" : "Hide Email";
-    renderAccounts();
-    renderStatsWidget();
-    renderPatches();
-    renderLogs();
-    if (currentView === "stats") renderStatsPage();
+
+    if (currentView === "home") {
+      renderAccounts();
+      renderStatsWidget();
+      renderLogs();
+    } else if (currentView === "stats") {
+      renderStatsPage(false);
+    }
   } catch (err) {
     console.error("render error:", err);
   }
@@ -727,18 +738,20 @@ function makeBarHtml(label, pct, resetIso) {
   var cls = p < 20 ? "err" : p < 40 ? "warn" : "";
   var resetText = fmtTime(resetIso);
   var rTag = resetIso ? '<span class="reset-tag ' + (resetText !== "ready" ? "active" : "") + '" data-reset="' + resetIso + '">' + resetText + '</span>' : '';
+  var scale = (p / 100).toFixed(3);
   return '<div class="quota-row">' +
     '<div style="display:flex;align-items:center;gap:3px;flex:1;min-width:0;overflow:hidden;">' +
       '<span style="color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(label) + '</span>' +
       rTag +
     '</div>' +
     '<div style="display:flex;align-items:center;gap:4px;width:48%;min-width:55px;max-width:110px;flex-shrink:0;">' +
-      '<div class="progress-bg"><div class="progress-fill ' + cls + '" style="width:' + p + '%"></div></div>' +
+      '<div class="progress-bg"><div class="progress-fill ' + cls + '" style="transform:scaleX(' + scale + ');"></div></div>' +
       '<span style="font-family:var(--mono);font-size:9.5px;width:26px;text-align:right;flex-shrink:0;">' + p + '%</span>' +
     '</div>' +
   '</div>';
 }
 
+var lastAccountsFp = "";
 function renderAccounts() {
   var list = document.getElementById("acc-list");
   if (!list) return;
@@ -746,6 +759,7 @@ function renderAccounts() {
   var accCountEl = document.getElementById("acc-count");
   if (accCountEl) accCountEl.textContent = accs.length + (accs.length === 1 ? " acc" : " accs");
   if (!accs.length) {
+    lastAccountsFp = "";
     list.innerHTML = '<div class="empty">No accounts in pool.<br>Click <strong>+ Add</strong> or sign in via Antigravity.</div>';
     var emptyRefEl = document.getElementById("quota-last-refreshed");
     if (emptyRefEl) emptyRefEl.textContent = "";
@@ -753,6 +767,24 @@ function renderAccounts() {
   }
   var quotas = (state && state.quotas && typeof state.quotas === "object") ? state.quotas : {};
   var visibleAccs = (!accountsExpanded && accs.length > 3) ? accs.slice(0, 3) : accs;
+
+  var fp = (hideEmail ? "1" : "0") + "|" + (accountsExpanded ? "1" : "0") + "|" + (state.activeEmail || "") + "|" + visibleAccs.length;
+  for (var fi = 0; fi < visibleAccs.length; fi++) {
+    var fa = visibleAccs[fi];
+    var fq = fa.email ? quotas[fa.email.toLowerCase()] : null;
+    fp += "|" + fa.email + ":" + fa.status + ":" + fa.tier + ":" + fa.alias + ":" + fa.affinity + ":" + fa.role + ":" + fa.health;
+    if (fq) {
+      fp += ":" + (fq.lastUpdated || 0) + ":" + (fq.percent || 0);
+      if (Array.isArray(fq.families)) {
+        for (var ff = 0; ff < fq.families.length; ff++) {
+          var fam = fq.families[ff];
+          if (fam) fp += ":" + fam.key + ":" + (fam.limit5h ? fam.limit5h.percent : fam.percent) + ":" + (fam.limitWeekly ? fam.limitWeekly.percent : "");
+        }
+      }
+    }
+  }
+  if (fp === lastAccountsFp) return;
+  lastAccountsFp = fp;
 
   var latestRefresh = 0;
   for (var k in quotas) {
@@ -822,11 +854,17 @@ function renderAccounts() {
   list.innerHTML = cardsHtml + expandBtn;
 }
 
+var lastStatsWidgetFp = "";
 function renderStatsWidget() {
   var container = document.getElementById("stats-widget");
   if (!container) return;
   var s = (state && state.stats) || {};
-  var t = s.today || { totalTokens: 0, inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, thinkingTokens: 0, contentTokens: 0 };
+  var t = s.today || { totalTokens: 0, inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, thinkingTokens: 0, contentTokens: 0, cacheMissTokens: 0 };
+  var br = s.burnRate || { tokensPerMin: 0, recentTurns: 0 };
+  var fp = (t.totalTokens || 0) + ":" + (t.inputTokens || 0) + ":" + (t.outputTokens || 0) + ":" + (t.cacheHitTokens || 0) + ":" + (t.thinkingTokens || 0) + ":" + (t.cacheMissTokens || 0) + ":" + br.tokensPerMin + ":" + br.recentTurns;
+  if (fp === lastStatsWidgetFp) return;
+  lastStatsWidgetFp = fp;
+
   var hasTokens = (t.totalTokens || 0) > 0;
   var tot = t.totalTokens || 1;
   var pCac = hasTokens ? Math.round(((t.cacheHitTokens || 0) / tot) * 100) : 0;
@@ -865,40 +903,26 @@ function renderStatsWidget() {
   '</div>';
 }
 
-function renderPatches() {
-  var container = document.getElementById("patch-list");
-  if (!container) return;
-  var patches = (state && state.patcher && Array.isArray(state.patcher.patches)) ? state.patcher.patches.filter(Boolean) : [];
-  if (!patches.length) {
-    container.innerHTML = '<div class="empty">No patches available.</div>';
-    return;
-  }
-  container.innerHTML = patches.map(function(p) {
-    var disabledClass = (!p.canApply && !p.isPatched) ? "disabled" : "";
-    var badgeHtml = p.isPatched ? '<span class="active-tag">ACTIVE</span>' : '<span class="dis-tag">OFF</span>';
-    var warningHtml = p.warning ? '<div class="card-warn">' + esc(p.warning) + '</div>' : "";
 
-    return '<div class="card ' + (p.isPatched ? "active" : "") + ' ' + disabledClass + '">' +
-      '<div class="card-head">' +
-        '<div style="display:flex;align-items:center;gap:4px;overflow:hidden;flex:1;min-width:0;">' +
-          '<span class="tier-tag">PATCH</span>' +
-          '<span class="card-title">' + esc(p.name || p.id) + '</span>' +
-          badgeHtml +
-        '</div>' +
-        '<label class="switch ' + disabledClass + '" title="' + (p.isPatched ? "Revert patch" : p.canApply ? "Apply patch" : "Unavailable") + '">' +
-          '<input type="checkbox" ' + (p.isPatched ? "checked" : "") + ' ' + ((!p.canApply && !p.isPatched) ? "disabled" : "") + ' data-action="togglePatch" data-patch-id="' + esc(p.id) + '" />' +
-          '<span class="slider"></span>' +
-        '</label>' +
-      '</div>' +
-      '<div class="card-desc">' + esc(p.description || "") + '</div>' +
-      warningHtml +
-    '</div>';
-  }).join("");
-}
-
-function renderStatsPage() {
+var lastStatsPageFp = "";
+function renderStatsPage(force) {
   updateTabStyles();
   var s = (state && state.stats) || {};
+  var t = s.today || {};
+  var req0 = (s.requests && s.requests[0]) || {};
+  var conv0 = (s.conversations && s.conversations[0]) || {};
+
+  var fp = statsRange + "|" + (selectedBarIndex !== null ? selectedBarIndex : "") + "|" +
+    sortConfig.requests.field + ":" + sortConfig.requests.dir + "|" +
+    sortConfig.models.field + ":" + sortConfig.models.dir + "|" +
+    sortConfig.conversations.field + ":" + sortConfig.conversations.dir + "|" +
+    (t.totalTokens || 0) + ":" + (t.inputTokens || 0) + ":" +
+    (s.requests ? s.requests.length : 0) + ":" + (req0.timestamp || 0) + ":" + (req0.totalTokens || 0) + "|" +
+    (s.conversations ? s.conversations.length : 0) + ":" + (conv0.lastActive || 0);
+
+  if (!force && fp === lastStatsPageFp) return;
+  lastStatsPageFp = fp;
+
   var startOfToday = new Date();
   startOfToday.setHours(0, 0, 0, 0);
   var cutoffMs = startOfToday.getTime();
@@ -966,10 +990,11 @@ function renderStatsPage() {
 
   var totalSvgWidth = Math.max(280, data.length * stepX + 32);
   chartBox.innerHTML = '<svg class="chart-svg" style="width:' + totalSvgWidth + 'px;min-width:100%;" viewBox="0 0 ' + totalSvgWidth + ' 142">' + svgBars + '</svg>';
-  if ((statsRange === "today" || statsRange === "daily") && selectedBarIndex === null) {
-    setTimeout(function() {
+  if (shouldScrollChart && (statsRange === "today" || statsRange === "daily") && selectedBarIndex === null) {
+    shouldScrollChart = false;
+    requestAnimationFrame(function() {
       if (chartBox) chartBox.scrollLeft = chartBox.scrollWidth;
-    }, 20);
+    });
   }
 
   // Selected bar slice or full active horizon
@@ -1073,6 +1098,7 @@ function renderStatsPage() {
   var reqBreakdownEl = document.getElementById("request-breakdown");
   if (reqCountEl) reqCountEl.textContent = reqs.length + " reqs";
   if (reqBreakdownEl) {
+    var prevReqScroll = reqBreakdownEl.scrollLeft;
     var filterBanner = activeSlice
       ? '<div class="row" style="background:var(--card);border:1px solid var(--accent);border-radius:5px;padding:3px 7px;width:100%;margin-bottom:3px;"><span style="font-size:9px;color:var(--text);font-weight:600;">Filtered to ' + esc(selectedBarLabel || "Slice") + '</span><button class="btn btn-sec btn-icon" data-action="clearBarFilter" style="font-size:8.5px;padding:1px 4px;">Clear</button></div>'
       : '';
@@ -1094,7 +1120,7 @@ function renderStatsPage() {
         '<div class="card-head" style="align-items:flex-start;">' +
           '<span class="tier-tag" title="' + esc(modelTag) + '">' + esc(modelTag) + '</span>' +
         '</div>' +
-        '<div class="card-title" title="' + esc(r.promptPreview || "") + '" style="font-size:9.5px;font-weight:500;color:var(--text);">' + esc(r.promptPreview || "User Prompt") + '</div>' +
+        '<div class="card-title" title="' + esc(r.promptPreview || "") + '">' + esc(r.promptPreview || "User Prompt") + '</div>' +
         '<div style="display:flex;align-items:baseline;justify-content:space-between;margin:1px 0;">' +
           '<span style="font-size:8px;color:var(--dim);text-transform:uppercase;font-weight:600;">Tokens</span>' +
           '<span style="font-size:14px;font-weight:700;font-family:var(--mono);color:var(--text);">' + fmtNum(r.totalTokens || 0) + ' <span style="font-size:10px;font-weight:700;color:var(--cached);" title="' + esc(rCacHover) + '">(' + hitRate + '%)</span></span>' +
@@ -1107,6 +1133,7 @@ function renderStatsPage() {
         '</div>' +
       '</div>';
     }).join("")) : (filterBanner + '<div class="empty" style="width:100%;">No requests in this period.</div>');
+    if (prevReqScroll > 0) reqBreakdownEl.scrollLeft = prevReqScroll;
   }
 
   // Render Filtered Models
@@ -1154,6 +1181,7 @@ function renderStatsPage() {
   var modelBreakdownEl = document.getElementById("model-breakdown");
   if (modelCountEl) modelCountEl.textContent = mKeys.length + " models";
   if (modelBreakdownEl) {
+    var prevModelScroll = modelBreakdownEl.scrollLeft;
     modelBreakdownEl.innerHTML = mKeys.length ? mKeys.map(function(m) {
       var b = models[m];
       if (!b) return "";
@@ -1168,7 +1196,7 @@ function renderStatsPage() {
         '<div class="card-head" style="align-items:flex-start;">' +
           '<span class="tier-tag" title="This is showing model ID, not the model name">MODEL</span>' +
         '</div>' +
-        '<div class="card-title" title="' + esc(m) + '" style="font-size:10px;font-weight:600;color:var(--text);">' + esc(m) + '</div>' +
+        '<div class="card-title" title="' + esc(m) + '">' + esc(m) + '</div>' +
         '<div style="display:flex;align-items:baseline;justify-content:space-between;margin:1px 0;">' +
           '<span style="font-size:8px;color:var(--dim);text-transform:uppercase;font-weight:600;">Volume</span>' +
           '<span style="font-size:14px;font-weight:700;font-family:var(--mono);color:var(--text);">' + fmtNum(b.total) + ' <span style="font-size:10px;font-weight:700;color:var(--cached);" title="' + esc(mCacHover) + '">(' + mHitRate + '%)</span></span>' +
@@ -1180,6 +1208,7 @@ function renderStatsPage() {
         '</div>' +
       '</div>';
     }).join("") : '<div class="empty" style="width:100%;">No model activity.</div>';
+    if (prevModelScroll > 0) modelBreakdownEl.scrollLeft = prevModelScroll;
   }
 
   // Render Filtered Sessions (Conversations)
@@ -1211,6 +1240,7 @@ function renderStatsPage() {
   var convBreakdownEl = document.getElementById("conv-breakdown");
   if (convCountEl) convCountEl.textContent = convs.length + " sessions";
   if (convBreakdownEl) {
+    var prevConvScroll = convBreakdownEl.scrollLeft;
     convBreakdownEl.innerHTML = convs.length ? convs.map(function(c) {
       if (!c) return "";
       var cDateStr = c.lastActive ? new Date(c.lastActive).toLocaleDateString([], { month: "numeric", day: "numeric" }) : "";
@@ -1231,7 +1261,7 @@ function renderStatsPage() {
         '<div class="card-head" style="align-items:flex-start;overflow:hidden;width:100%;">' +
           '<span class="tier-tag" title="' + esc(fullModelTitle) + '" style="max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(displayModelTag) + '</span>' +
         '</div>' +
-        '<div class="card-title" title="' + esc(c.title || "") + '" style="font-size:9.5px;font-weight:500;color:var(--text);">' + esc(c.title || (c.id ? c.id.slice(0,8) : "Session")) + '</div>' +
+        '<div class="card-title" title="' + esc(c.title || "") + '">' + esc(c.title || (c.id ? c.id.slice(0,8) : "Session")) + '</div>' +
         '<div style="display:flex;align-items:baseline;justify-content:space-between;margin:1px 0;">' +
           '<span style="font-size:8px;color:var(--dim);text-transform:uppercase;font-weight:600;">Tokens</span>' +
           '<span style="font-size:14px;font-weight:700;font-family:var(--mono);color:var(--text);">' + fmtNum(c.totalTokens || 0) + ' <span style="font-size:10px;font-weight:700;color:var(--cached);" title="' + esc(cCacHover) + '">(' + cHitRate + '%)</span></span>' +
@@ -1244,20 +1274,49 @@ function renderStatsPage() {
         '</div>' +
       '</div>';
     }).join("") : '<div class="empty" style="width:100%;">No sessions in this period.</div>';
+    if (prevConvScroll > 0) convBreakdownEl.scrollLeft = prevConvScroll;
   }
 }
 
 setInterval(function() {
-  document.querySelectorAll(".reset-tag[data-reset]").forEach(function(el) {
+  var tags = document.querySelectorAll(".reset-tag[data-reset]");
+  for (var i = 0; i < tags.length; i++) {
+    var el = tags[i];
     var iso = el.getAttribute("data-reset");
     if (iso) {
       var t = fmtTime(iso);
-      el.textContent = t;
-      if (t === "ready") el.classList.remove("active");
-      else el.classList.add("active");
+      if (el.textContent !== t) {
+        el.textContent = t;
+        if (t === "ready") el.classList.remove("active");
+        else el.classList.add("active");
+      }
     }
-  });
+  }
 }, 1000);
+
+var lastLogCount = 0;
+var lastLogFirstTs = 0;
+var lastLogHideEmail = null;
+
+function formatLogCardHtml(l) {
+  if (!l) return "";
+  var lvl = (l.level || "info").toLowerCase();
+  var colCls = lvl === "error" ? "error" : lvl === "warn" ? "warn" : lvl === "rotate" ? "rotate" : "";
+  var cat = esc(l.category || "LOG");
+  var badgeColor = lvl === "error" ? "color:#f87171" : lvl === "warn" ? "color:#fbbf24" : "color:#6ee7b7";
+  var disTag = lvl !== "info" ? '<span class="dis-tag" style="' + badgeColor + '">' + lvl.toUpperCase() + '</span>' : '';
+  var cleanMsg = sanitizeTextForDisplay(l.message || "");
+  return '<div class="log-card">' +
+    '<div class="log-meta">' +
+      '<div style="display:flex;align-items:center;gap:4px;">' +
+        '<span class="tier-tag">' + cat + '</span>' +
+        '<span style="font-family:var(--mono);">' + (l.timestamp ? new Date(l.timestamp).toLocaleTimeString() : "") + '</span>' +
+      '</div>' +
+      disTag +
+    '</div>' +
+    '<div class="log-msg ' + colCls + '">' + esc(cleanMsg) + '</div>' +
+  '</div>';
+}
 
 function renderLogs() {
   var el = document.getElementById("log-scroll");
@@ -1266,30 +1325,49 @@ function renderLogs() {
   var logs = rawLogs.length > 200 ? rawLogs.slice(rawLogs.length - 200) : rawLogs;
   var logCountEl = document.getElementById("log-count");
   if (logCountEl) logCountEl.textContent = logs.length + " logs";
+
   if (!logs.length) {
+    lastLogCount = 0;
+    lastLogFirstTs = 0;
+    lastLogHideEmail = hideEmail;
     el.innerHTML = '<div class="empty">No events logged yet.</div>';
     return;
   }
-  el.innerHTML = logs.map(function(l) {
-    if (!l) return "";
-    var lvl = (l.level || "info").toLowerCase();
-    var colCls = lvl === "error" ? "error" : lvl === "warn" ? "warn" : lvl === "rotate" ? "rotate" : "";
-    var cat = esc(l.category || "LOG");
-    var badgeColor = lvl === "error" ? "color:#f87171" : lvl === "warn" ? "color:#fbbf24" : "color:#6ee7b7";
-    var disTag = lvl !== "info" ? '<span class="dis-tag" style="' + badgeColor + '">' + lvl.toUpperCase() + '</span>' : '';
-    var cleanMsg = sanitizeTextForDisplay(l.message || "");
-    return '<div class="log-card">' +
-      '<div class="log-meta">' +
-        '<div style="display:flex;align-items:center;gap:4px;">' +
-          '<span class="tier-tag">' + cat + '</span>' +
-          '<span style="font-family:var(--mono);">' + (l.timestamp ? new Date(l.timestamp).toLocaleTimeString() : "") + '</span>' +
-        '</div>' +
-        disTag +
-      '</div>' +
-      '<div class="log-msg ' + colCls + '">' + esc(cleanMsg) + '</div>' +
-    '</div>';
-  }).join("");
-  el.scrollTop = el.scrollHeight;
+
+  var firstTs = logs[0] ? (logs[0].timestamp || 0) : 0;
+  if (logs.length === lastLogCount && firstTs === lastLogFirstTs && hideEmail === lastLogHideEmail) {
+    return;
+  }
+
+  var isAtBottom = (el.scrollHeight - el.scrollTop - el.clientHeight) < 40;
+
+  if (logs.length > lastLogCount && firstTs === lastLogFirstTs && hideEmail === lastLogHideEmail && lastLogCount > 0) {
+    var newLogs = logs.slice(lastLogCount);
+    var frag = document.createDocumentFragment();
+    for (var ni = 0; ni < newLogs.length; ni++) {
+      var itemHtml = formatLogCardHtml(newLogs[ni]);
+      if (itemHtml) {
+        var temp = document.createElement("div");
+        temp.innerHTML = itemHtml;
+        var node = temp.firstElementChild;
+        if (node) frag.appendChild(node);
+      }
+    }
+    var emptyEl = el.querySelector(".empty");
+    if (emptyEl) emptyEl.remove();
+    el.appendChild(frag);
+    lastLogCount = logs.length;
+    if (isAtBottom) el.scrollTop = el.scrollHeight;
+    return;
+  }
+
+  lastLogCount = logs.length;
+  lastLogFirstTs = firstTs;
+  lastLogHideEmail = hideEmail;
+  el.innerHTML = logs.map(formatLogCardHtml).join("");
+  if (isAtBottom || el.scrollTop === 0) {
+    el.scrollTop = el.scrollHeight;
+  }
 }
 
 send("ready");
