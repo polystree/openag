@@ -16,6 +16,7 @@ import {
 } from "../types.js";
 import { OAuthFlow } from "./oauth-flow.js";
 import { exportPool, importPool } from "./pool-crypto.js";
+import { FALLBACK_ENDPOINT, PRIMARY_ENDPOINT } from "./quota-monitor.js";
 import type { UsageTracker } from "./usage-tracker.js";
 import { USSBridge } from "./uss-bridge.js";
 
@@ -72,6 +73,7 @@ export class TokenManager {
     this.accounts = this.context.globalState.get<Account[]>(KEY_ACCOUNTS, []);
     this.activeEmail = this.context.globalState.get<string>(KEY_ACTIVE, "");
     this.config = this.context.globalState.get<OpenAGConfig>(KEY_CONFIG, this.config);
+    this.loadVscodeSettings();
 
     for (const acc of this.accounts) {
       const key = this.getSecretKey(acc.email);
@@ -123,9 +125,61 @@ export class TokenManager {
     return this.config.enabled ?? true;
   }
 
+  public loadVscodeSettings(): void {
+    if (!vscode.workspace?.getConfiguration) return;
+    try {
+      const wsCfg = vscode.workspace.getConfiguration("openag");
+      const enabled = wsCfg.get<boolean>("enabled");
+      const hideEmail = wsCfg.get<boolean>("hideEmail");
+      const rotationStrategy = wsCfg.get<RotationStrategy>("rotationStrategy");
+      const endpointOverride = wsCfg.get<string>("endpointOverride");
+      const pollIntervalSeconds = wsCfg.get<number>("pollIntervalSeconds");
+
+      let changed = false;
+      if (typeof enabled === "boolean" && enabled !== this.config.enabled) {
+        this.config.enabled = enabled;
+        changed = true;
+      }
+      if (typeof hideEmail === "boolean" && hideEmail !== this.config.hideEmail) {
+        this.config.hideEmail = hideEmail;
+        changed = true;
+      }
+      if (rotationStrategy && rotationStrategy !== this.config.rotationStrategy) {
+        this.config.rotationStrategy = rotationStrategy;
+        changed = true;
+      }
+      if (typeof endpointOverride === "string" && endpointOverride !== (this.config.endpointOverride || "")) {
+        this.config.endpointOverride = endpointOverride;
+        changed = true;
+      }
+      if (typeof pollIntervalSeconds === "number" && pollIntervalSeconds !== this.config.pollIntervalSeconds) {
+        this.config.pollIntervalSeconds = pollIntervalSeconds;
+        changed = true;
+      }
+      if (changed) {
+        void this.context.globalState.update(KEY_CONFIG, this.config);
+        this.onAccountChangeEmitter.fire();
+      }
+    } catch {
+      // Configuration read error in headless/test env
+    }
+  }
+
   public async updateConfig(newConfig: Partial<OpenAGConfig>): Promise<void> {
     this.config = { ...this.config, ...newConfig };
     await this.context.globalState.update(KEY_CONFIG, this.config);
+    if (vscode.workspace?.getConfiguration) {
+      try {
+        const wsCfg = vscode.workspace.getConfiguration("openag");
+        for (const [k, v] of Object.entries(newConfig)) {
+          if (v !== undefined) {
+            await wsCfg.update(k, v, vscode.ConfigurationTarget.Global);
+          }
+        }
+      } catch {
+        // Configuration write error in headless/test env
+      }
+    }
     this.onAccountChangeEmitter.fire();
   }
 
@@ -563,16 +617,30 @@ export class TokenManager {
       });
       void (async () => {
         try {
-          await fetch("https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist", {
+          const override = this.config.endpointOverride?.trim();
+          const primary = override || PRIMARY_ENDPOINT;
+          const fallback = override ? null : FALLBACK_ENDPOINT;
+          const headers = {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+            "User-Agent": "Antigravity/2.5.5",
+          };
+          const body = JSON.stringify({ metadata: { ideType: "ANTIGRAVITY", ideVersion: "2.5.5" } });
+          let res = await fetch(`${primary}/v1internal:loadCodeAssist`, {
             method: "POST",
-            headers: {
-              Authorization: `Bearer ${token}`,
-              "Content-Type": "application/json",
-              "User-Agent": "Antigravity/2.5.5",
-            },
-            body: JSON.stringify({ metadata: { ideType: "ANTIGRAVITY", ideVersion: "2.5.5" } }),
+            headers,
+            body,
             signal: AbortSignal.timeout(10000),
-          });
+          }).catch(() => null);
+
+          if ((!res || (!res.ok && (res.status === 404 || res.status === 403 || res.status >= 500))) && fallback) {
+            res = await fetch(`${fallback}/v1internal:loadCodeAssist`, {
+              method: "POST",
+              headers,
+              body,
+              signal: AbortSignal.timeout(10000),
+            }).catch(() => null);
+          }
         } catch (fetchErr: unknown) {
           this.log(`[USS] Code assist pre-warm failed: ${fetchErr instanceof Error ? fetchErr.message : String(fetchErr)}`);
         }

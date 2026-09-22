@@ -3,7 +3,8 @@ import type { Account, AccountQuota, AccountTier, FamilyQuota, ModelQuota, Quota
 import type { TokenManager } from "./token-manager.js";
 import type { UsageTracker } from "./usage-tracker.js";
 
-const ENDPOINT = "https://cloudcode-pa.googleapis.com";
+export const PRIMARY_ENDPOINT = "https://daily-cloudcode-pa.googleapis.com";
+export const FALLBACK_ENDPOINT = "https://cloudcode-pa.googleapis.com";
 const CODE_ASSIST_BODY = JSON.stringify({ metadata: { ideType: "ANTIGRAVITY", ideVersion: "2.5.5" } });
 const FIVE_HOURS = 5 * 60 * 60 * 1000;
 const KEY_QUOTA_CACHE = "openag.quota_cache.v1";
@@ -59,6 +60,9 @@ export class QuotaMonitor {
   private pollTimer: NodeJS.Timeout | null = null;
   private cleanupTimer: NodeJS.Timeout | null = null;
   private modelsDiscovered = false;
+  private static readonly IDLE_THRESHOLD_MS = 5 * 60 * 1000;
+  private static readonly IDLE_POLL_INTERVAL_MS = 5 * 60 * 1000;
+  private lastActivityTime = Date.now();
 
   constructor(
     private readonly tokenManager: TokenManager,
@@ -171,12 +175,11 @@ export class QuotaMonitor {
         await this.tokenManager.updateAccountTier(account.email, tier);
       }
 
-      const res = await fetch(`${ENDPOINT}/v1internal:retrieveUserQuotaSummary`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json", "User-Agent": "Antigravity/2.5.5" },
-        body: JSON.stringify({ project: account.projectId || "" }),
-        signal: AbortSignal.timeout(10000),
-      });
+      const res = await this.postCloudCode(
+        "/v1internal:retrieveUserQuotaSummary",
+        accessToken,
+        JSON.stringify({ project: account.projectId || "" }),
+      );
 
       if (!res.ok) {
         const errText = await res.text();
@@ -286,15 +289,61 @@ export class QuotaMonitor {
     return result;
   }
 
+  private async postCloudCode(
+    path: string,
+    accessToken: string,
+    body: string,
+    timeoutMs = 10000,
+  ): Promise<Response> {
+    const override = this.tokenManager.getConfig().endpointOverride?.trim();
+    const primary = override || PRIMARY_ENDPOINT;
+    const fallback = override ? null : FALLBACK_ENDPOINT;
+
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+      "User-Agent": "Antigravity/2.5.5",
+    };
+
+    try {
+      const res = await fetch(`${primary}${path}`, {
+        method: "POST",
+        headers,
+        body,
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (!res.ok && fallback && (res.status === 404 || res.status === 403 || res.status >= 500)) {
+        this.log(`Primary endpoint ${primary} returned HTTP ${res.status}, falling back to ${fallback}`);
+        return await fetch(`${fallback}${path}`, {
+          method: "POST",
+          headers,
+          body,
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+      }
+      return res;
+    } catch (err) {
+      if (fallback) {
+        this.log(`Primary endpoint ${primary} failed (${err instanceof Error ? err.message : String(err)}), falling back to ${fallback}`);
+        return await fetch(`${fallback}${path}`, {
+          method: "POST",
+          headers,
+          body,
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+      }
+      throw err;
+    }
+  }
+
   private async discoverModels(accessToken: string): Promise<void> {
     if (this.modelsDiscovered) return;
     try {
-      const res = await fetch(`${ENDPOINT}/v1internal:fetchAvailableModels`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json", "User-Agent": "Antigravity/2.5.5" },
-        body: JSON.stringify({}),
-        signal: AbortSignal.timeout(10000),
-      });
+      const res = await this.postCloudCode(
+        "/v1internal:fetchAvailableModels",
+        accessToken,
+        JSON.stringify({}),
+      );
       if (!res.ok) return;
       // SAFETY: Available models endpoint response structure
       const data = (await res.json()) as { models?: Record<string, { maxTokens?: number }> };
@@ -307,12 +356,11 @@ export class QuotaMonitor {
 
   private async detectTier(account: Account, accessToken: string): Promise<AccountTier> {
     try {
-      const res = await fetch(`${ENDPOINT}/v1internal:loadCodeAssist`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json", "User-Agent": "Antigravity/2.5.5" },
-        body: CODE_ASSIST_BODY,
-        signal: AbortSignal.timeout(10000),
-      });
+      const res = await this.postCloudCode(
+        "/v1internal:loadCodeAssist",
+        accessToken,
+        CODE_ASSIST_BODY,
+      );
       if (!res.ok) return account.tier || "pro";
       // SAFETY: Code assist subscription tier response payload
       const data = (await res.json()) as { paidTier?: { id?: string; name?: string }; tierId?: string; currentTier?: { id?: string; name?: string } };
@@ -363,13 +411,44 @@ export class QuotaMonitor {
     return "other";
   }
 
+  public notifyActivity(): void {
+    const wasIdle = Date.now() - this.lastActivityTime > QuotaMonitor.IDLE_THRESHOLD_MS;
+    this.lastActivityTime = Date.now();
+    if (wasIdle) {
+      void this.pollActiveAccount();
+      this.scheduleNextPoll();
+    }
+  }
+
+  private getActivePollIntervalMs(): number {
+    const cfgSec = this.tokenManager.getConfig().pollIntervalSeconds;
+    return typeof cfgSec === "number" && cfgSec >= 15 ? cfgSec * 1000 : 60000;
+  }
+
+  private scheduleNextPoll(): void {
+    if (this.pollTimer) clearTimeout(this.pollTimer);
+    const isIdle = Date.now() - this.lastActivityTime > QuotaMonitor.IDLE_THRESHOLD_MS;
+    const interval = isIdle ? QuotaMonitor.IDLE_POLL_INTERVAL_MS : this.getActivePollIntervalMs();
+
+    this.pollTimer = setTimeout(async () => {
+      try {
+        await this.pollAllAccounts();
+      } finally {
+        this.scheduleNextPoll();
+      }
+    }, interval);
+  }
+
   private startPolling(): void {
-    if (this.pollTimer) clearInterval(this.pollTimer);
-    this.pollTimer = setInterval(() => void this.pollAllAccounts(), 60000);
+    this.scheduleNextPoll();
+  }
+
+  public restartPolling(): void {
+    this.scheduleNextPoll();
   }
 
   public dispose(): void {
-    if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null; }
+    if (this.pollTimer) { clearTimeout(this.pollTimer); this.pollTimer = null; }
     if (this.cleanupTimer) { clearInterval(this.cleanupTimer); this.cleanupTimer = null; }
   }
 }

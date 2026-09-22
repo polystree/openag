@@ -2,7 +2,7 @@
   "name": "openag",
   "displayName": "OpenAG",
   "description": "Multi-account pool and quota rotation for Google Antigravity.",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "publisher": "polystree",
   "author": "Polystree",
   "license": "MIT",
@@ -58,6 +58,47 @@
           "icon": "resources/openag-icon.svg"
         }
       ]
+    },
+    "configuration": {
+      "title": "OpenAG",
+      "properties": {
+        "openag.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable or disable OpenAG multi-account rotation."
+        },
+        "openag.rotationStrategy": {
+          "type": "string",
+          "enum": [
+            "auto_highest",
+            "cache_optimized",
+            "round_robin"
+          ],
+          "enumDescriptions": [
+            "Always pick the account with the highest available quota",
+            "Stay on the active account until its quota drops below 15% to preserve prompt cache hits",
+            "Cycle sequentially through healthy accounts"
+          ],
+          "default": "auto_highest",
+          "description": "Account rotation strategy."
+        },
+        "openag.hideEmail": {
+          "type": "boolean",
+          "default": false,
+          "description": "Mask Google account email addresses in the status bar and notifications."
+        },
+        "openag.endpointOverride": {
+          "type": "string",
+          "default": "",
+          "description": "Custom Cloud Code PA endpoint URL override. Leave empty to use auto-detect with dual-endpoint fallback."
+        },
+        "openag.pollIntervalSeconds": {
+          "type": "number",
+          "default": 60,
+          "minimum": 15,
+          "description": "Active quota polling interval in seconds (backs off to 5 minutes when editor is idle)."
+        }
+      }
     },
     "commands": [
       {
@@ -120,13 +161,13 @@
     "package": "bun run compile:prod && vsce package --no-dependencies --no-rewrite-relative-links"
   },
   "devDependencies": {
-    "@oxlint/plugins": "^1.79.0",
-    "@types/bun": "^1.3.14",
-    "@types/node": "^26.2.0",
+    "@oxlint/plugins": "^1.85.0",
+    "@types/bun": "^1.4.2",
+    "@types/node": "^26.6.2",
     "@types/vscode": "1.85.0",
-    "@vscode/vsce": "^3.9.2",
+    "@vscode/vsce": "^4.0.0",
     "esbuild": "^0.28.2",
-    "oxlint": "^1.79.0",
+    "oxlint": "^1.85.0",
     "typescript": "^7.0.2"
   }
 }

@@ -83,6 +83,8 @@ export interface OpenAGConfig {
   enabled: boolean;
   hideEmail?: boolean;
   rotationStrategy?: RotationStrategy;
+  endpointOverride?: string;
+  pollIntervalSeconds?: number;
 }
 
 export interface LogEntry {

@@ -90,9 +90,22 @@ export function activate(context: vscode.ExtensionContext): ExtensionExports {
       statusBar?.flashRotating();
       webviewProvider?.refresh();
     }),
+    vscode.window.onDidChangeWindowState((state) => {
+      if (state.focused) {
+        quotaMonitor?.notifyActivity();
+      }
+    }),
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration("openag")) {
+        tokenManager?.loadVscodeSettings();
+        quotaMonitor?.restartPolling();
+        webviewProvider?.refresh();
+      }
+    }),
   );
 
   usageTracker.onContextChange((ctx) => {
+    quotaMonitor?.notifyActivity();
     statusBar?.updateContext(ctx);
     if (tokenManager && quotaMonitor) {
       void tokenManager.autoSelectHighestQuota(quotaMonitor.getAllQuotas(), `model ${ctx.model}`, ctx.model);

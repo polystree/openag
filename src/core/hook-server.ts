@@ -39,6 +39,8 @@ export class HookServer {
                 payload = JSON.parse(body.trim()) as HookInvocationPayload;
               }
 
+              this.quotaMonitor.notifyActivity?.();
+
               const targetModel = payload.modelName || "";
               const rotated = await this.tokenManager.autoSelectHighestQuota(
                 this.quotaMonitor.getAllQuotas(),
