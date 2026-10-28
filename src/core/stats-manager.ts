@@ -85,6 +85,35 @@ export function extractSubagentTitle(convId: string): string | null {
   return null;
 }
 
+export function extractFirstPromptFromTranscript(convId: string): string | null {
+  const cleanId = convId.endsWith(".db") ? convId.slice(0, -3) : convId;
+  const transcriptPath = resolveTranscriptPath(cleanId);
+  if (!transcriptPath || !fs.existsSync(transcriptPath)) return null;
+
+  try {
+    const content = fs.readFileSync(transcriptPath, "utf8");
+    const lines = content.split("\n").slice(0, 15);
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const obj = JSON.parse(line) as { source?: string; type?: string; content?: string };
+      if (obj.type === "USER_INPUT" || obj.source === "USER_EXPLICIT") {
+        const raw = String(obj.content || "");
+        const reqMatch = raw.match(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/i);
+        const text = (reqMatch ? reqMatch[1] : raw) || "";
+        const clean = text
+          .replace(/<[^>]+>/g, "")
+          .replace(/[\r\n\t]+/g, " ")
+          .trim();
+        if (clean.length > 2) {
+          return clean.slice(0, 55);
+        }
+      }
+    }
+  } catch { /* ignore filesystem errors */ }
+
+  return null;
+}
+
 export function extractAntigravityTitle(convId: string, fallbackPrompt = ""): string {
   const dbPath = resolveConversationDb(convId) || path.join(CONV_DIR, `${convId}.db`);
   if (fs.existsSync(dbPath)) {
@@ -103,6 +132,9 @@ export function extractAntigravityTitle(convId: string, fallbackPrompt = ""): st
 
   const subagentTitle = extractSubagentTitle(convId);
   if (subagentTitle) return subagentTitle;
+
+  const promptTitle = extractFirstPromptFromTranscript(convId);
+  if (promptTitle) return promptTitle;
 
   if (fallbackPrompt) {
     const clean = fallbackPrompt.replace(/[\r\n]+/g, " ").trim();
@@ -832,9 +864,20 @@ export class StatsManager {
   }
 
   public getConversationsList(limit = 100): ConversationStats[] {
-    return Object.values(this.registry.conversations || {})
-      .sort((a, b) => b.lastActive - a.lastActive)
+    const list = Object.entries(this.registry.conversations || {})
+      .sort(([, a], [, b]) => b.lastActive - a.lastActive)
       .slice(0, limit);
+
+    for (const [id, c] of list) {
+      if (!c.title || /^[0-9a-f]{8}$/i.test(c.title)) {
+        const fresh = extractAntigravityTitle(id);
+        if (fresh && fresh !== id.slice(0, 8)) {
+          c.title = fresh;
+        }
+      }
+    }
+
+    return list.map(([, c]) => c);
   }
 
   public getRequestsList(limit = 100): RequestStats[] {

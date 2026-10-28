@@ -142,8 +142,13 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
             await vscode.commands.executeCommand("openag.addAccount");
             break;
           case "refreshQuotas":
-            await this.quotaMonitor.pollAllAccounts();
-            this.refresh();
+            this.logManager.addLog("info", "QUOTA", "Refreshing account pool quotas...");
+            await this.quotaMonitor.pollAllAccounts(true);
+            {
+              const poolCount = this.tokenManager.getAccounts().filter((a) => a.status !== "disabled").length;
+              this.logManager.addLog("info", "QUOTA", `Quota refresh complete (${poolCount} active accounts updated).`);
+            }
+            this.postState();
             break;
           case "toggleAccount":
             if (message.payload) {
@@ -172,8 +177,10 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
             break;
           case "refreshAccount":
             if (message.payload) {
+              this.logManager.addLog("info", "QUOTA", `Refreshing quota for ${message.payload}...`);
               await this.quotaMonitor.refreshAccountQuota(message.payload);
-              this.refresh();
+              this.logManager.addLog("info", "QUOTA", `Quota refreshed for ${message.payload}.`);
+              this.postState();
             }
             break;
           case "removeAccount":
@@ -246,11 +253,14 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); padd
 .sec-head { font-size: 10.5px; font-weight: 600; color: var(--dim); margin-top: 2px; display: flex; align-items: center; justify-content: space-between; }
 
 .btn-row { display: flex; gap: 4px; align-items: center; justify-content: flex-end; flex-shrink: 0; }
-.btn { display: inline-flex; align-items: center; justify-content: center; gap: 3px; background: var(--accent); color: #fff; border: 1px solid transparent; border-radius: 4px; padding: 3px 7px; font-family: var(--font); font-size: 10.5px; font-weight: 500; cursor: pointer; white-space: nowrap; flex-shrink: 0; }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 4px; background: var(--accent); color: #fff; border: 1px solid transparent; border-radius: 4px; padding: 3px 8px; font-family: var(--font); font-size: 10.5px; font-weight: 500; cursor: pointer; white-space: nowrap; flex-shrink: 0; }
 .btn:hover { background: var(--accent-h); }
-.btn-sec { background: var(--card); color: var(--text); border-color: var(--border); }
-.btn-sec:hover { background: var(--hover); }
-.btn-icon { padding: 1px 4px; font-size: 9.5px; }
+.btn-sec { background: var(--vscode-button-secondaryBackground, rgba(255,255,255,.08)); color: var(--vscode-button-secondaryForeground, var(--text)); border: 1px solid var(--vscode-button-border, var(--border)); }
+.btn-sec:hover { background: var(--vscode-button-secondaryHoverBackground, rgba(255,255,255,.14)); }
+.btn-icon { padding: 2px 4px; font-size: 9.5px; min-width: 18px; }
+.btn.loading { opacity: 0.75; cursor: wait; }
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+.spin { animation: spin 0.8s linear infinite; }
 
 .sort-select { background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 1px 3px; font-size: 9px; font-family: var(--font); outline: none; cursor: pointer; }
 .sort-select:focus { border-color: var(--accent); }
@@ -352,8 +362,14 @@ g.bar-group:hover rect { filter: brightness(1.15); }
       <span class="info-badge" title="OpenAG Rotation:&#10;&#10;Active Across All Strategies:&#10;• Tier Priority: Always burns Ultra/Pro/Plus accounts before touching Free tier accounts.&#10;• Timing Priority (Drain Window): Holds active account if its 5h window resets in &lt;=30 mins (&gt;5% quota) to consume capacity before refill.&#10;• Reserve Gating: Uses Primary pool until all drop to &lt;=10%, then unlocks Reserve pool.&#10;• Model Affinity: Routes prompts according to active model family (Gemini vs Claude/GPT-OSS).&#10;• 429 Interception: Sub-second auto-rotation on API rate limits.&#10;&#10;Selectable Strategies:&#10;• Auto-Highest: Selects highest quota with +1000 score bonus for &lt;=45m refills.&#10;• Cache Optimized: Holds active account while quota &gt;15% to maintain warm GPU prefix cache.&#10;• Round Robin: Cycles evenly across healthy accounts while respecting tier & timing.">!</span>
     </div>
     <div class="btn-row">
-      <button class="btn btn-sec" data-action="refreshQuotas" title="Refresh quotas">Refresh</button>
-      <button class="btn" data-action="addAccount" title="Add Google Account">+ Add</button>
+      <button class="btn btn-sec" id="btn-refresh-quotas" data-action="refreshQuotas" title="Refresh quotas">
+        <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" clip-rule="evenodd" d="M4.681 3H2V2h3.5l.5.5V6H5V4a5 5 0 1 0 4.53-.761l.302-.954A6 6 0 1 1 4.681 3z"/></svg>
+        <span class="btn-text">Refresh</span>
+      </button>
+      <button class="btn" data-action="addAccount" title="Add Google Account">
+        <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M14 7v1H8v6H7V8H1V7h6V1h1v6h6z"/></svg>
+        <span>Add</span>
+      </button>
     </div>
   </div>
 
@@ -586,14 +602,21 @@ document.addEventListener("click", function(e) {
   } else if (action === "reauthAccount") {
     send("reauthAccount", target.getAttribute("data-email"));
   } else if (action === "refreshAccount") {
-    target.textContent = "...";
+    var svgEl = target.querySelector("svg");
+    if (svgEl) svgEl.classList.add("spin");
+    target.disabled = true;
     send("refreshAccount", target.getAttribute("data-email"));
   } else if (action === "removeAccount") {
     send("removeAccount", target.getAttribute("data-email"));
   } else if (action === "addAccount") {
     send("addAccount");
   } else if (action === "refreshQuotas") {
-    target.textContent = "Refreshing...";
+    var rBtn = document.getElementById("btn-refresh-quotas") || target;
+    rBtn.classList.add("loading");
+    var rTxt = rBtn.querySelector(".btn-text");
+    if (rTxt) rTxt.textContent = "Refreshing...";
+    var rSvg = rBtn.querySelector("svg");
+    if (rSvg) rSvg.classList.add("spin");
     send("refreshQuotas");
   } else if (action === "clearLogs") {
     send("clearLogs");
@@ -722,6 +745,15 @@ function render() {
     }
     var btn = document.getElementById("btn-hide-email");
     if (btn) btn.textContent = hideEmail ? "Show Email" : "Hide Email";
+
+    var rBtn = document.getElementById("btn-refresh-quotas");
+    if (rBtn) {
+      rBtn.classList.remove("loading");
+      var rTxt = rBtn.querySelector(".btn-text");
+      if (rTxt) rTxt.textContent = "Refresh";
+      var rSvg = rBtn.querySelector("svg");
+      if (rSvg) rSvg.classList.remove("spin");
+    }
 
     if (currentView === "home") {
       renderAccounts();
@@ -983,8 +1015,12 @@ function createCardElement(acc, idx, quotas, state, hideEmail) {
         '<input type="checkbox" ' + (isDis ? "" : "checked") + ' data-action="toggleAccount" data-email="' + esc(email) + '" />' +
         '<span class="slider"></span>' +
       '</label>' +
-      '<button class="btn btn-sec btn-icon" data-action="refreshAccount" data-email="' + esc(email) + '" title="Refresh">&#x21bb;</button>' +
-      '<button class="btn btn-sec btn-icon" data-action="removeAccount" data-email="' + esc(email) + '" title="Remove">&times;</button>' +
+      '<button class="btn btn-sec btn-icon" data-action="refreshAccount" data-email="' + esc(email) + '" title="Refresh quota">' +
+        '<svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" clip-rule="evenodd" d="M4.681 3H2V2h3.5l.5.5V6H5V4a5 5 0 1 0 4.53-.761l.302-.954A6 6 0 1 1 4.681 3z"/></svg>' +
+      '</button>' +
+      '<button class="btn btn-sec btn-icon" data-action="removeAccount" data-email="' + esc(email) + '" title="Remove account">' +
+        '<svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M10 3h3v1h-1v9l-1 1H5l-1-1V4H3V3h3V2l1-1h2l1 1v1zM5 4v9h6V4H5zm2 2h1v5H7V6zm3 0H9v5h1V6z"/></svg>' +
+      '</button>' +
     '</div>' +
   '</div>' +
   qHtml;

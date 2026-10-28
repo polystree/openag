@@ -97,7 +97,7 @@ export class QuotaMonitor {
   private readonly lsClient: LanguageServerClient;
   private pollTimer: NodeJS.Timeout | null = null;
   private cleanupTimer: NodeJS.Timeout | null = null;
-  private isPollingAll = false;
+  private currentPollPromise: Promise<void> | null = null;
   private modelsDiscovered = false;
   private static readonly IDLE_THRESHOLD_MS = 5 * 60 * 1000;
   private static readonly IDLE_POLL_INTERVAL_MS = 5 * 60 * 1000;
@@ -643,30 +643,38 @@ export class QuotaMonitor {
     if (active) await this.fetchAccountQuota(active);
   }
 
-  public async pollAllAccounts(): Promise<void> {
-    if (this.isPollingAll) return;
-    this.isPollingAll = true;
-    try {
-      const accounts = this.tokenManager.getAccounts().filter((acc) => acc.status !== "disabled");
-      accounts.sort((a, b) => {
-        const aPriority = this.priorityQueue.has(a.email.toLowerCase()) ? 1 : 0;
-        const bPriority = this.priorityQueue.has(b.email.toLowerCase()) ? 1 : 0;
-        return bPriority - aPriority;
-      });
-      const concurrency = Math.min(4, Math.max(2, Math.floor(accounts.length / 3)));
-      await runWithConcurrency(accounts, concurrency, async (acc) => {
-        await this.fetchAccountQuota(acc, true);
-        if (accounts.length > 6) {
-          await new Promise((r) => setTimeout(r, 100));
-        }
-      });
-      if (this.tokenManager.isExtensionEnabled() && this.tokenManager.isRotationEnabled()) {
-        const model = this.usageTracker?.getActiveModel();
-        void this.tokenManager.autoSelectHighestQuota(this.getAllQuotas(), "poll all accounts completion", model);
+  public async pollAllAccounts(force = false): Promise<void> {
+    if (this.currentPollPromise) {
+      if (force) {
+        await this.currentPollPromise;
       }
-    } finally {
-      this.isPollingAll = false;
+      return;
     }
+    const run = async () => {
+      try {
+        const accounts = this.tokenManager.getAccounts().filter((acc) => acc.status !== "disabled");
+        accounts.sort((a, b) => {
+          const aPriority = this.priorityQueue.has(a.email.toLowerCase()) ? 1 : 0;
+          const bPriority = this.priorityQueue.has(b.email.toLowerCase()) ? 1 : 0;
+          return bPriority - aPriority;
+        });
+        const concurrency = Math.min(4, Math.max(2, Math.floor(accounts.length / 3)));
+        await runWithConcurrency(accounts, concurrency, async (acc) => {
+          await this.fetchAccountQuota(acc, true);
+          if (accounts.length > 6) {
+            await new Promise((r) => setTimeout(r, 100));
+          }
+        });
+        if (this.tokenManager.isExtensionEnabled() && this.tokenManager.isRotationEnabled()) {
+          const model = this.usageTracker?.getActiveModel();
+          void this.tokenManager.autoSelectHighestQuota(this.getAllQuotas(), "poll all accounts completion", model);
+        }
+      } finally {
+        this.currentPollPromise = null;
+      }
+    };
+    this.currentPollPromise = run();
+    await this.currentPollPromise;
   }
 
   private categorizeFamily(name: string, bucketId = ""): "gemini" | "claude" | "argon" | "other" {
