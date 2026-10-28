@@ -1,8 +1,18 @@
 import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 
 export const DEFAULT_HOOK_PORT = 27182;
 
+interface IpcDiscovery {
+  port?: number;
+  authToken?: string;
+  pid?: number;
+  updatedAt?: number;
+}
+
 interface PreInvocationResponse {
+  decision?: string;
   rotated?: boolean;
   email?: string;
   percent?: number;
@@ -11,20 +21,88 @@ interface PreInvocationResponse {
   error?: string;
 }
 
+export function readIpcDiscovery(): { port: number; authToken: string } {
+  let port = process.env.OPENAG_HOOK_PORT ? parseInt(process.env.OPENAG_HOOK_PORT, 10) : 0;
+  let authToken = process.env.OPENAG_HOOK_AUTH_TOKEN || "";
+
+  if (!port || !authToken) {
+    try {
+      const ipcPath = path.join(os.homedir(), ".gemini", "openag", "ipc.json");
+      if (fs.existsSync(ipcPath)) {
+        const content = fs.readFileSync(ipcPath, "utf-8");
+        const data = JSON.parse(content) as IpcDiscovery;
+        if (!port && typeof data.port === "number" && data.port > 0) {
+          port = data.port;
+        }
+        if (!authToken && typeof data.authToken === "string") {
+          authToken = data.authToken;
+        }
+      }
+    } catch {
+      // Ignore discovery reading error, fallback below
+    }
+  }
+
+  return {
+    port: port || DEFAULT_HOOK_PORT,
+    authToken,
+  };
+}
+
+export async function readStdinWithTimeout(timeoutMs = 15): Promise<string> {
+  if (process.stdin.isTTY || process.stdin.readableEnded) return "";
+  return new Promise((resolve) => {
+    let data = "";
+    let done = false;
+
+    const finish = () => {
+      if (!done) {
+        done = true;
+        clearTimeout(timer);
+        process.stdin.removeListener("data", onData);
+        process.stdin.removeListener("end", onEnd);
+        process.stdin.removeListener("error", onError);
+        resolve(data);
+      }
+    };
+
+    const timer = setTimeout(finish, timeoutMs);
+    timer.unref?.();
+
+    const onData = (chunk: string | Buffer) => {
+      data += String(chunk);
+    };
+    const onEnd = finish;
+    const onError = finish;
+
+    process.stdin.on("data", onData);
+    process.stdin.once("end", onEnd);
+    process.stdin.once("error", onError);
+    process.stdin.resume();
+  });
+}
+
 export async function runHook(): Promise<void> {
   let rawInput = "";
   try {
-    rawInput = fs.readFileSync(0, "utf-8");
+    rawInput = await readStdinWithTimeout(15);
   } catch { /* ignore empty stdin */ }
 
-  const port = process.env.OPENAG_HOOK_PORT ? parseInt(process.env.OPENAG_HOOK_PORT, 10) : DEFAULT_HOOK_PORT;
+  const { port, authToken } = readIpcDiscovery();
 
   try {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (authToken) {
+      headers["x-openag-auth"] = authToken;
+    }
+
     const res = await fetch(`http://127.0.0.1:${port}/pre-invocation`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: rawInput || "{}",
-      signal: AbortSignal.timeout(500),
+      signal: AbortSignal.timeout(45),
     });
 
     if (res.ok) {
@@ -36,6 +114,7 @@ export async function runHook(): Promise<void> {
         const msg = `[OpenAG] Auto-rotated active account to ${data.email}${quotaInfo}`;
 
         const output = {
+          decision: "allow",
           injectSteps: [
             {
               ephemeralMessage: msg,
@@ -47,12 +126,22 @@ export async function runHook(): Promise<void> {
       }
     }
   } catch {
-    // Graceful fallback: extension is offline or unreachable in < 500ms
+    // Graceful fallback: extension is offline or unreachable in < 45ms
   }
 
-  process.stdout.write("{}\n");
+  process.stdout.write(`${JSON.stringify({ decision: "allow" })}\n`);
 }
 
-if (process.env.NODE_ENV !== "test") {
-  void runHook();
+const isMainScript =
+  typeof process.argv[1] === "string" &&
+  (process.argv[1].endsWith("hook.js") || process.argv[1].endsWith("hook.ts"));
+
+if (isMainScript && process.env.NODE_ENV !== "test") {
+  runHook().catch(() => {
+    try {
+      process.stdout.write(`${JSON.stringify({ decision: "allow" })}\n`);
+    } catch {
+      // ignore
+    }
+  });
 }

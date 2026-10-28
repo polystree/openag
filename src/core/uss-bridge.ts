@@ -59,6 +59,19 @@ export function decodeBase64Url(str: string): Buffer {
   return Buffer.from(base64, "base64");
 }
 
+export type USSBridgeLogger = (msg: string) => void;
+let bridgeLogger: USSBridgeLogger | null = null;
+
+export function setUSSBridgeLogger(logger: USSBridgeLogger | null): void {
+  bridgeLogger = logger;
+}
+
+function debugLog(msg: string): void {
+  bridgeLogger?.(msg);
+}
+
+const tokenEmailCache = new Map<string, string>();
+
 export const USSBridge = {
   getClientCredentials(): ClientCredentials {
     try {
@@ -67,7 +80,9 @@ export const USSBridge = {
       const cid = pref?.clientId || pref?.client_id || api?.clientId;
       const sec = pref?.clientSecret || pref?.client_secret || api?.clientSecret;
       if (cid) return { clientId: cid, clientSecret: sec || DEFAULT_CLIENT_SECRET };
-    } catch { /* ignore */ }
+    } catch (e: unknown) {
+      debugLog(`[USSBridge] Failed to read client credentials from IDE: ${e instanceof Error ? e.message : String(e)}`);
+    }
     return { clientId: DEFAULT_CLIENT_ID, clientSecret: DEFAULT_CLIENT_SECRET };
   },
 
@@ -77,7 +92,8 @@ export const USSBridge = {
       return token?.accessToken
         ? { accessToken: token.accessToken, refreshToken: token.refreshToken || "", expiryDateSeconds: token.expiryDateSeconds || 0, tokenType: token.tokenType || "Bearer" }
         : null;
-    } catch {
+    } catch (e: unknown) {
+      debugLog(`[USSBridge] Failed to get OAuth token from USS: ${e instanceof Error ? e.message : String(e)}`);
       return null;
     }
   },
@@ -101,16 +117,16 @@ export const USSBridge = {
       }
 
       if (api) {
-        try { api.sync?.(); } catch { /* ignore */ }
-        try { api.refresh?.(); } catch { /* ignore */ }
-        try { api.notifyChange?.(); } catch { /* ignore */ }
-        try { api.onOAuthTokenChanged?.(); } catch { /* ignore */ }
+        try { api.sync?.(); } catch (e: unknown) { debugLog(`[USSBridge] api.sync error: ${e instanceof Error ? e.message : String(e)}`); }
+        try { api.refresh?.(); } catch (e: unknown) { debugLog(`[USSBridge] api.refresh error: ${e instanceof Error ? e.message : String(e)}`); }
+        try { api.notifyChange?.(); } catch (e: unknown) { debugLog(`[USSBridge] api.notifyChange error: ${e instanceof Error ? e.message : String(e)}`); }
+        try { api.onOAuthTokenChanged?.(); } catch (e: unknown) { debugLog(`[USSBridge] api.onOAuthTokenChanged error: ${e instanceof Error ? e.message : String(e)}`); }
 
         const us = api.UserStatus;
         if (us) {
-          try { us.updateUserStatus?.(); } catch { /* ignore */ }
-          try { us.refresh?.(); } catch { /* ignore */ }
-          try { us.sync?.(); } catch { /* ignore */ }
+          try { us.updateUserStatus?.(); } catch (e: unknown) { debugLog(`[USSBridge] us.updateUserStatus error: ${e instanceof Error ? e.message : String(e)}`); }
+          try { us.refresh?.(); } catch (e: unknown) { debugLog(`[USSBridge] us.refresh error: ${e instanceof Error ? e.message : String(e)}`); }
+          try { us.sync?.(); } catch (e: unknown) { debugLog(`[USSBridge] us.sync error: ${e instanceof Error ? e.message : String(e)}`); }
         }
       }
 
@@ -121,22 +137,30 @@ export const USSBridge = {
         "antigravity.getUserStatus",
         "jetski.refresh",
       ]) {
-        try { void vscode.commands.executeCommand(cmd); } catch { /* ignore */ }
+        try { void vscode.commands.executeCommand(cmd); } catch (e: unknown) { debugLog(`[USSBridge] Failed to execute ${cmd}: ${e instanceof Error ? e.message : String(e)}`); }
       }
       return true;
-    } catch {
+    } catch (e: unknown) {
+      debugLog(`[USSBridge] Failed to set OAuth token: ${e instanceof Error ? e.message : String(e)}`);
       return false;
     }
   },
 
   async getEmailFromToken(accessToken: string): Promise<string | null> {
+    if (!accessToken) return null;
+    const cached = tokenEmailCache.get(accessToken);
+    if (cached) return cached;
+
     try {
       const parts = accessToken.split(".");
       if (parts.length === 3 && parts[1]) {
         // SAFETY: RFC 7515 JWT payload segment decoded from base64url
         const decoded = decodeBase64Url(parts[1]).toString("utf-8");
         const payload = JSON.parse(decoded) as { email?: string };
-        if (payload.email) return payload.email;
+        if (payload.email) {
+          tokenEmailCache.set(accessToken, payload.email);
+          return payload.email;
+        }
       }
       const res = await fetch(`https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(accessToken)}`, {
         signal: AbortSignal.timeout(5000),
@@ -144,9 +168,13 @@ export const USSBridge = {
       if (res.ok) {
         // SAFETY: Google OAuth tokeninfo JSON endpoint returns optional email string
         const data = (await res.json()) as { email?: string };
-        if (data.email) return data.email;
+        if (data.email) {
+          tokenEmailCache.set(accessToken, data.email);
+          return data.email;
+        }
       }
-    } catch {
+    } catch (e: unknown) {
+      debugLog(`[USSBridge] Failed to get email from token: ${e instanceof Error ? e.message : String(e)}`);
       return null;
     }
     return null;
@@ -166,13 +194,16 @@ export const USSBridge = {
           try {
             const decoded = Buffer.from(text, "base64").toString("utf-8");
             if (decoded.includes("@")) text = decoded;
-          } catch { /* ignore */ }
+          } catch (e: unknown) {
+            debugLog(`[USSBridge] Failed to decode base64 status: ${e instanceof Error ? e.message : String(e)}`);
+          }
         }
         const match = text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
         if (match) return match[0];
       }
       return null;
-    } catch {
+    } catch (e: unknown) {
+      debugLog(`[USSBridge] Failed to get IDE email: ${e instanceof Error ? e.message : String(e)}`);
       return null;
     }
   },

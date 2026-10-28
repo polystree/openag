@@ -7,7 +7,7 @@ import { QuotaMonitor } from "./core/quota-monitor.js";
 import { StatsManager } from "./core/stats-manager.js";
 import { TokenManager } from "./core/token-manager.js";
 import { UsageTracker } from "./core/usage-tracker.js";
-import { USSBridge } from "./core/uss-bridge.js";
+import { setUSSBridgeLogger, USSBridge } from "./core/uss-bridge.js";
 import { StatusBarHUD } from "./ui/status-bar.js";
 import { WebviewProvider } from "./ui/webview-provider.js";
 import type { Account, AccountQuota } from "./types.js";
@@ -21,6 +21,18 @@ let logManager: LogManager | null = null;
 let usageTracker: UsageTracker | null = null;
 let statsManager: StatsManager | null = null;
 let hookServer: HookServer | null = null;
+
+export function maskEmail(email: string): string {
+  const atIdx = email.indexOf("@");
+  if (atIdx <= 1) return email.replace(/^./, "*");
+  const user = email.slice(0, atIdx);
+  const domain = email.slice(atIdx);
+  return `${user[0]}***${domain}`;
+}
+
+export function maskEmailsInText(text: string): string {
+  return text.replace(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g, (m) => maskEmail(m));
+}
 
 function getLogCategory(msg: string): "ROTATION" | "QUOTA" | "USS" | "AUTH" | "SYSTEM" {
   if (msg.includes("AutoRotate") || msg.includes("ROTATION")) return "ROTATION";
@@ -38,8 +50,10 @@ function getLogLevel(msg: string): "info" | "warn" | "error" | "rotate" {
 }
 
 const log = (msg: string): void => {
-  outputChannel?.appendLine(`[${new Date().toISOString().slice(11, 23)}] ${msg}`);
-  logManager?.addLog(getLogLevel(msg), getLogCategory(msg), msg);
+  const hideEmail = tokenManager?.getConfig()?.hideEmail ?? vscode.workspace?.getConfiguration?.("openag")?.get<boolean>("hideEmail") ?? false;
+  const safeMsg = hideEmail ? maskEmailsInText(msg) : msg;
+  outputChannel?.appendLine(`[${new Date().toISOString().slice(11, 23)}] ${safeMsg}`);
+  logManager?.addLog(getLogLevel(msg), getLogCategory(msg), safeMsg);
 };
 
 export interface ExtensionExports {
@@ -118,7 +132,8 @@ export function activate(context: vscode.ExtensionContext): ExtensionExports {
 
   logManager = new LogManager(context);
   statsManager = new StatsManager(context, log);
-  usageTracker = new UsageTracker(statsManager);
+  setUSSBridgeLogger(log);
+  usageTracker = new UsageTracker(statsManager, log);
   tokenManager = new TokenManager(context, log, usageTracker);
   const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   const lsClient = new LanguageServerClient(workspacePath, log);
@@ -155,6 +170,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionExports {
     tokenManager.onAccountChange(async () => {
       const active = tokenManager?.getActiveAccount();
       const quota = active ? quotaMonitor?.getQuota(active.email) : null;
+      statusBar?.clearRateLimit(active?.email ?? "");
       statusBar?.updateAccount(active?.email ?? "", active?.tier ?? "unknown", tokenManager?.isExtensionEnabled() ?? true, quota);
       statusBar?.flashRotating();
       webviewProvider?.refresh();
@@ -186,6 +202,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionExports {
     if (tokenManager && quotaMonitor) {
       const active = tokenManager.getActiveAccount();
       if (active) {
+        statusBar?.markRateLimited(active.email, evt.model);
         quotaMonitor.markAccountExhausted(active.email, evt.model);
         await tokenManager.autoSelectHighestQuota(quotaMonitor.getAllQuotas(), "rate_limit_failover", evt.model);
       }
@@ -247,6 +264,18 @@ export function activate(context: vscode.ExtensionContext): ExtensionExports {
     }
   };
 
+  let lastSyncIdeAuthTime = 0;
+  const SYNC_THROTTLE_MS = 60000;
+
+  const throttledSyncIdeAuth = async (force = false): Promise<void> => {
+    const now = Date.now();
+    if (!force && now - lastSyncIdeAuthTime < SYNC_THROTTLE_MS) {
+      return;
+    }
+    lastSyncIdeAuthTime = now;
+    await syncIdeAuth();
+  };
+
   const updateWorkspacePaths = () => {
     const folders = vscode.workspace.workspaceFolders?.map((f) => f.uri.fsPath || f.uri.toString()) || [];
     usageTracker?.setWorkspacePaths(folders);
@@ -269,13 +298,14 @@ export function activate(context: vscode.ExtensionContext): ExtensionExports {
     }
   })();
 
-  const syncTimer = setInterval(() => void syncIdeAuth(), 10000);
+  // Periodic background drift fallback heartbeat (5 minutes) instead of aggressive 10s polling
+  const syncTimer = setInterval(() => void throttledSyncIdeAuth(), 300000);
 
   context.subscriptions.push(
     { dispose: () => clearInterval(syncTimer) },
     vscode.window.onDidChangeWindowState((s) => {
       if (s.focused) {
-        void syncIdeAuth();
+        void throttledSyncIdeAuth();
         usageTracker?.refresh();
       }
     }),
@@ -311,13 +341,14 @@ export function activate(context: vscode.ExtensionContext): ExtensionExports {
         vscode.window.showInformationMessage("OpenAG: Opening browser for Google login...");
         const res = await OAuthFlow.startLogin();
         await registerAuthAccount(res);
-        vscode.window.showInformationMessage(`OpenAG: Account added - ${res.email}`);
+        const addedDisplay = tokenManager?.getConfig()?.hideEmail ? maskEmail(res.email) : res.email;
+        vscode.window.showInformationMessage(`OpenAG: Account added - ${addedDisplay}`);
       } catch (e: unknown) {
         vscode.window.showErrorMessage(`OpenAG: Login failed - ${e instanceof Error ? e.message : String(e)}`);
       }
     }),
     vscode.commands.registerCommand("openag.refreshQuotas", async () => {
-      await syncIdeAuth();
+      await throttledSyncIdeAuth(true);
       await quotaMonitor?.pollAllAccounts();
       vscode.window.showInformationMessage("OpenAG: Quotas refreshed");
     }),
@@ -379,7 +410,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionExports {
         if (!passphrase) return;
 
         const count = await tokenManager.importAccounts(rawJson, passphrase);
-        await syncIdeAuth();
+        await throttledSyncIdeAuth(true);
         void quotaMonitor?.pollAllAccounts();
         void vscode.window.showInformationMessage(`OpenAG: Successfully imported ${count} accounts.`);
         webviewProvider?.refresh();
@@ -409,7 +440,8 @@ export function activate(context: vscode.ExtensionContext): ExtensionExports {
           selected.action();
         } else if (selected?.email) {
           await tokenManager.selectAccount(selected.email);
-          void vscode.window.showInformationMessage(`OpenAG: Switched active account to ${selected.email}`);
+          const switchDisplay = tokenManager.getConfig()?.hideEmail ? maskEmail(selected.email) : selected.email;
+          void vscode.window.showInformationMessage(`OpenAG: Switched active account to ${switchDisplay}`);
         }
       } catch (e: unknown) {
         void vscode.window.showErrorMessage(`OpenAG: Quick Status error - ${e instanceof Error ? e.message : String(e)}`);

@@ -91,6 +91,9 @@ export class QuotaMonitor {
   private readonly quotas = new Map<string, AccountQuota>();
   private readonly tierCheckedAt = new Map<string, number>();
   private static readonly TIER_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+  public static readonly DEFAULT_COOLDOWN_MS = 5 * 60 * 1000;
+  private readonly cooldownTimers = new Map<string, NodeJS.Timeout>();
+  private readonly priorityQueue = new Set<string>();
   private readonly lsClient: LanguageServerClient;
   private pollTimer: NodeJS.Timeout | null = null;
   private cleanupTimer: NodeJS.Timeout | null = null;
@@ -111,11 +114,21 @@ export class QuotaMonitor {
       workspacePath,
       (msg) => this.log(msg),
     );
+    this.tokenManager.setQuotaMonitor?.(this);
     if (this.context) {
       const cached = this.context.globalState.get<Record<string, AccountQuota>>(KEY_QUOTA_CACHE, {});
       if (cached) {
         for (const [email, q] of Object.entries(cached)) {
-          if (q && email) this.quotas.set(email.toLowerCase(), q);
+          if (q && email) {
+            this.quotas.set(email.toLowerCase(), q);
+            if (q.cooldownExpiresAt) {
+              if (q.cooldownExpiresAt <= Date.now()) {
+                void this.onCooldownExpired(email);
+              } else {
+                this.scheduleCooldownPoll(email, q.cooldownExpiresAt);
+              }
+            }
+          }
         }
       }
     }
@@ -139,7 +152,7 @@ export class QuotaMonitor {
   public cleanupExpiredQuotas(): void {
     const now = Date.now();
     for (const [email, q] of this.quotas.entries()) {
-      if (q.lastUpdated && now - q.lastUpdated > FIVE_HOURS) {
+      if (q.lastUpdated && now - q.lastUpdated > FIVE_HOURS && (!q.cooldownExpiresAt || q.cooldownExpiresAt <= now)) {
         this.quotas.delete(email);
       }
     }
@@ -156,32 +169,158 @@ export class QuotaMonitor {
     return Object.fromEntries(this.quotas);
   }
 
-  public markAccountExhausted(email: string, modelFamily?: string): void {
-    const q = this.quotas.get(email.toLowerCase());
+  public markAccountExhausted(email: string, modelFamily?: string, cooldownMs?: number): void {
+    const emailKey = email.toLowerCase();
+    const q = this.quotas.get(emailKey);
     if (!q) return;
+
+    const now = Date.now();
     const famKey = modelFamily
       ? modelFamily.toLowerCase().includes("claude")
         ? "claude"
         : "gemini"
       : undefined;
 
+    let effectiveResetTs = Infinity;
     for (const fam of q.families) {
       if (!famKey || fam.key === famKey) {
         fam.percent = 0;
         if (fam.limit5h) fam.limit5h.percent = 0;
+        if (fam.resetTime) {
+          const ts = Date.parse(fam.resetTime);
+          if (!Number.isNaN(ts) && ts > now && ts < effectiveResetTs) {
+            effectiveResetTs = ts;
+          }
+        }
+        if (fam.limit5h?.resetTime) {
+          const ts = Date.parse(fam.limit5h.resetTime);
+          if (!Number.isNaN(ts) && ts > now && ts < effectiveResetTs) {
+            effectiveResetTs = ts;
+          }
+        }
+        if (fam.limitWeekly?.resetTime) {
+          const ts = Date.parse(fam.limitWeekly.resetTime);
+          if (!Number.isNaN(ts) && ts > now && ts < effectiveResetTs) {
+            effectiveResetTs = ts;
+          }
+        }
       }
     }
     for (const m of q.models) {
       if (!famKey || m.family === famKey) {
         m.percent = 0;
+        if (m.resetTime) {
+          const ts = Date.parse(m.resetTime);
+          if (!Number.isNaN(ts) && ts > now && ts < effectiveResetTs) {
+            effectiveResetTs = ts;
+          }
+        }
       }
     }
-    q.lastUpdated = Date.now();
-    this.quotas.set(email.toLowerCase(), q);
+
+    q.exhaustedAt = now;
+    let cooldownExpiresAt: number;
+    if (typeof cooldownMs === "number" && cooldownMs > 0) {
+      cooldownExpiresAt = now + cooldownMs;
+    } else if (effectiveResetTs !== Infinity) {
+      cooldownExpiresAt = effectiveResetTs;
+    } else {
+      cooldownExpiresAt = now + QuotaMonitor.DEFAULT_COOLDOWN_MS;
+    }
+    q.cooldownExpiresAt = cooldownExpiresAt;
+
+    for (const fam of q.families) {
+      if (!famKey || fam.key === famKey) {
+        if (!fam.resetTime) {
+          fam.resetTime = new Date(cooldownExpiresAt).toISOString();
+        }
+      }
+    }
+
+    q.lastUpdated = now;
+    this.quotas.set(emailKey, q);
     if (this.context) {
       void this.context.globalState.update(KEY_QUOTA_CACHE, this.getAllQuotas());
     }
     this.onQuotaUpdate?.(q);
+
+    this.scheduleCooldownPoll(email, cooldownExpiresAt);
+  }
+
+  public scheduleCooldownPoll(email: string, cooldownExpiresAt: number): void {
+    const emailKey = email.toLowerCase();
+    const existing = this.cooldownTimers.get(emailKey);
+    if (existing) {
+      clearTimeout(existing);
+      this.cooldownTimers.delete(emailKey);
+    }
+
+    const now = Date.now();
+    const delayMs = Math.max(500, cooldownExpiresAt - now);
+
+    this.log(
+      `[Cooldown] Account ${email} marked in cooldown until ${new Date(cooldownExpiresAt).toISOString()} (in ${Math.round(delayMs / 1000)}s)`,
+    );
+
+    const timer = setTimeout(() => {
+      this.cooldownTimers.delete(emailKey);
+      void this.onCooldownExpired(email);
+    }, delayMs);
+
+    this.cooldownTimers.set(emailKey, timer);
+  }
+
+  public async onCooldownExpired(email: string): Promise<void> {
+    const emailKey = email.toLowerCase();
+    this.priorityQueue.add(emailKey);
+    this.log(`[Cooldown] Cooldown expired for ${email}. Priority polling quota...`);
+
+    try {
+      const quota = await this.refreshAccountQuota(email);
+      if (quota) {
+        const hasRefilled =
+          quota.families.some((f) => f.percent > 10) || quota.models.some((m) => m.percent > 10);
+        if (hasRefilled) {
+          quota.cooldownExpiresAt = undefined;
+          quota.exhaustedAt = undefined;
+          this.quotas.set(emailKey, quota);
+          if (this.context) {
+            void this.context.globalState.update(KEY_QUOTA_CACHE, this.getAllQuotas());
+          }
+          this.log(`[Cooldown] Account ${email} successfully rehabilitated! Quota refilled (> 10%).`);
+          await this.tokenManager.restoreAccountStatus(email);
+          this.onQuotaUpdate?.(quota);
+
+          if (this.tokenManager.isExtensionEnabled() && this.tokenManager.isRotationEnabled()) {
+            const model = this.usageTracker?.getActiveModel();
+            void this.tokenManager.autoSelectHighestQuota(this.getAllQuotas(), `rehabilitation on ${email}`, model);
+          }
+        } else {
+          this.log(`[Cooldown] Account ${email} still exhausted (quota <= 10%). Rescheduled cooldown poll.`);
+          const now = Date.now();
+          let nextExpiresAt = now + 60000;
+          for (const f of quota.families) {
+            if (f.resetTime) {
+              const ts = Date.parse(f.resetTime);
+              if (!Number.isNaN(ts) && ts > now) {
+                nextExpiresAt = ts;
+                break;
+              }
+            }
+          }
+          quota.cooldownExpiresAt = nextExpiresAt;
+          this.quotas.set(emailKey, quota);
+          if (this.context) {
+            void this.context.globalState.update(KEY_QUOTA_CACHE, this.getAllQuotas());
+          }
+          this.scheduleCooldownPoll(email, nextExpiresAt);
+        }
+      }
+    } catch (err) {
+      this.log(`[Cooldown] Priority poll failed for ${email}: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      this.priorityQueue.delete(emailKey);
+    }
   }
 
   public getExhaustionEstimate(
@@ -490,6 +629,11 @@ export class QuotaMonitor {
 
   public async pollAllAccounts(): Promise<void> {
     const accounts = this.tokenManager.getAccounts().filter((acc) => acc.status !== "disabled");
+    accounts.sort((a, b) => {
+      const aPriority = this.priorityQueue.has(a.email.toLowerCase()) ? 1 : 0;
+      const bPriority = this.priorityQueue.has(b.email.toLowerCase()) ? 1 : 0;
+      return bPriority - aPriority;
+    });
     await runWithConcurrency(accounts, 4, (acc) => this.fetchAccountQuota(acc, true));
     if (this.tokenManager.isExtensionEnabled() && this.tokenManager.isRotationEnabled()) {
       const model = this.usageTracker?.getActiveModel();
@@ -551,5 +695,10 @@ export class QuotaMonitor {
   public dispose(): void {
     if (this.pollTimer) { clearTimeout(this.pollTimer); this.pollTimer = null; }
     if (this.cleanupTimer) { clearInterval(this.cleanupTimer); this.cleanupTimer = null; }
+    for (const timer of this.cooldownTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.cooldownTimers.clear();
+    this.priorityQueue.clear();
   }
 }

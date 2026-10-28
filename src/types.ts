@@ -25,6 +25,7 @@ export interface Account {
   projectId?: string;
   createdAt: number;
   updatedAt: number;
+  cooldownExpiresAt?: number;
 }
 
 export interface BurnRateInfo {
@@ -75,6 +76,8 @@ export interface AccountQuota {
   families: FamilyQuota[];
   models: ModelQuota[];
   lastUpdated: number;
+  exhaustedAt?: number;
+  cooldownExpiresAt?: number;
 }
 
 export type RotationStrategy = "auto_highest" | "cache_optimized" | "round_robin";
@@ -179,9 +182,28 @@ export interface TokenStatsRegistry {
   lastUpdated: number;
 }
 
+export type BindingWindow = "5h" | "weekly" | "both";
+
 export interface EffectiveQuota {
   percent: number;
   resetTs: number;
+  bindingWindow: BindingWindow;
+}
+
+export interface CooldownInfo {
+  email: string;
+  exhaustedAt: number;
+  cooldownExpiresAt: number;
+  modelFamily?: string;
+}
+
+export interface AutoSelectOptions {
+  quotas?: Record<string, AccountQuota>;
+  reason?: string;
+  targetModel?: string;
+  isRateLimitFailover?: boolean;
+  forceSwitch?: boolean;
+  hysteresisDelta?: number;
 }
 
 declare global {

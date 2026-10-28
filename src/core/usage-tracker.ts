@@ -15,7 +15,9 @@ export function normalizePath(p: string): string {
   if (!p) return "";
   try {
     p = decodeURIComponent(p);
-  } catch { /* ignore */ }
+  } catch {
+    // Retain un-decoded string if malformed URI component
+  }
 
   let norm = p.replace(/\\/g, "/").toLowerCase().trim();
 
@@ -53,6 +55,9 @@ export class UsageTracker {
   private lastProcessedLineCount = 0;
   private lastProcessedPath: string | null = null;
   private lastProcessedGenIdx = 0;
+  private lastByteOffset = 0;
+  private cachedLines: string[] = [];
+  private trailingRemainder = "";
   private lastReportedRateLimitLine = -1;
   private lastRateLimitTime = 0;
   private isComputing = false;
@@ -70,7 +75,10 @@ export class UsageTracker {
   private readonly onRateLimitEmitter = new vscode.EventEmitter<{ model: string; error: string }>();
   public readonly onRateLimit = this.onRateLimitEmitter.event;
 
-  constructor(private readonly statsManager?: StatsManager) {
+  constructor(
+    private readonly statsManager?: StatsManager,
+    private readonly logger?: (msg: string) => void,
+  ) {
     this.initWatchers();
     this.refresh();
     this.pollInterval = setInterval(() => this.refresh(), 10000);
@@ -117,6 +125,9 @@ export class UsageTracker {
   public resetProcessedLines(): void {
     this.lastProcessedLineCount = 0;
     this.lastProcessedPath = null;
+    this.lastByteOffset = 0;
+    this.cachedLines = [];
+    this.trailingRemainder = "";
     this.scheduleCompute();
   }
 
@@ -131,6 +142,9 @@ export class UsageTracker {
         path.join(BRAIN_DIR, convId, ".system_generated", "logs", "transcript.jsonl");
       this.lastProcessedLineCount = 0;
       this.lastProcessedPath = null;
+      this.lastByteOffset = 0;
+      this.cachedLines = [];
+      this.trailingRemainder = "";
       this.attachTranscriptWatcher();
     }
 
@@ -146,7 +160,9 @@ export class UsageTracker {
           });
           this.convDirWatchers.push(watcher);
         }
-      } catch { /* ignore watcher error */ }
+      } catch (e: unknown) {
+        this.logger?.(`[UsageTracker] Watcher setup failed for dir ${dir}: ${e instanceof Error ? e.message : String(e)}`);
+      }
     }
   }
 
@@ -164,7 +180,9 @@ export class UsageTracker {
           this.scheduleCompute();
         });
       }
-    } catch { /* ignore watcher error */ }
+    } catch (e: unknown) {
+      this.logger?.(`[UsageTracker] Transcript watcher setup failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   private scheduleCompute(): void {
@@ -196,14 +214,14 @@ export class UsageTracker {
           const buf = Buffer.alloc(readLen);
           fs.readSync(fd, buf, 0, readLen, 0);
           uri = extractUriFromText(buf.toString("utf-8"));
-        } catch {
-          // Ignore binary scan fallback error
+        } catch (e: unknown) {
+          this.logger?.(`[UsageTracker] Binary scan error for ${dbPath}: ${e instanceof Error ? e.message : String(e)}`);
         } finally {
           if (fd !== null) {
             try {
               fs.closeSync(fd);
-            } catch {
-              // Ignore close error
+            } catch (e: unknown) {
+              this.logger?.(`[UsageTracker] Failed to close fd for ${dbPath}: ${e instanceof Error ? e.message : String(e)}`);
             }
           }
         }
@@ -211,7 +229,8 @@ export class UsageTracker {
 
       this.dbWorkspaceCache.set(dbPath, { mtime: st.mtimeMs, size: st.size, uri });
       return uri;
-    } catch {
+    } catch (e: unknown) {
+      this.logger?.(`[UsageTracker] extractWorkspaceUriFromDb error for ${dbPath}: ${e instanceof Error ? e.message : String(e)}`);
       return null;
     }
   }
@@ -229,9 +248,13 @@ export class UsageTracker {
           try {
             const st = fs.statSync(fullPath);
             fileStats.push({ name: f, fullPath, mtime: st.mtimeMs });
-          } catch { /* ignore */ }
+          } catch (e: unknown) {
+            this.logger?.(`[UsageTracker] Stat failed for ${fullPath}: ${e instanceof Error ? e.message : String(e)}`);
+          }
         }
-      } catch { /* ignore */ }
+      } catch (e: unknown) {
+        this.logger?.(`[UsageTracker] Readdir failed for ${dir}: ${e instanceof Error ? e.message : String(e)}`);
+      }
     }
 
     if (fileStats.length === 0) return null;
@@ -259,19 +282,53 @@ export class UsageTracker {
     this.isComputing = true;
 
     try {
-      const content = await fs.promises.readFile(this.activeTranscriptPath, "utf8");
-      const lines = content.split("\n").filter(Boolean);
-      if (lines.length === 0) return;
-
       const isPathChanged = this.lastProcessedPath !== this.activeTranscriptPath;
-      const convTitle = this.activeConversationId ? extractAntigravityTitle(this.activeConversationId) : "";
-      const parsed = parseTranscriptLines(lines, "", convTitle);
-
       if (isPathChanged) {
         this.lastProcessedLineCount = 0;
         this.lastProcessedPath = this.activeTranscriptPath;
         this.lastProcessedGenIdx = 0;
+        this.lastByteOffset = 0;
+        this.cachedLines = [];
+        this.trailingRemainder = "";
       }
+
+      const st = await fs.promises.stat(this.activeTranscriptPath);
+      if (st.size < this.lastByteOffset) {
+        this.lastByteOffset = 0;
+        this.cachedLines = [];
+        this.trailingRemainder = "";
+        this.lastProcessedLineCount = 0;
+        this.lastProcessedGenIdx = 0;
+      }
+
+      if (st.size > this.lastByteOffset) {
+        const bytesToRead = st.size - this.lastByteOffset;
+        const handle = await fs.promises.open(this.activeTranscriptPath, "r");
+        try {
+          const buf = Buffer.alloc(bytesToRead);
+          const { bytesRead } = await handle.read(buf, 0, bytesToRead, this.lastByteOffset);
+          this.lastByteOffset += bytesRead;
+          const chunk = this.trailingRemainder + buf.toString("utf8", 0, bytesRead);
+          const split = chunk.split("\n");
+          if (chunk.endsWith("\n")) {
+            this.trailingRemainder = "";
+          } else {
+            this.trailingRemainder = split.pop() ?? "";
+          }
+          for (const l of split) {
+            const trimmed = l.trim();
+            if (trimmed) this.cachedLines.push(trimmed);
+          }
+        } finally {
+          await handle.close();
+        }
+      }
+
+      const lines = this.cachedLines;
+      if (lines.length === 0) return;
+
+      const convTitle = this.activeConversationId ? extractAntigravityTitle(this.activeConversationId) : "";
+      const parsed = parseTranscriptLines(lines, "", convTitle);
 
       // Read gen_metadata for exact token counts and context window
       const genMetrics = this.activeConversationId ? readGenMetadata(this.activeConversationId) : null;
@@ -347,7 +404,9 @@ export class UsageTracker {
         this.lastProcessedLineCount = parsed.completedEndLine;
         this.lastProcessedPath = this.activeTranscriptPath;
       }
-    } catch { /* ignore compute error */ } finally {
+    } catch (e: unknown) {
+      this.logger?.(`[UsageTracker] computeContextUsage failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
       this.isComputing = false;
     }
   }
@@ -368,7 +427,9 @@ export class UsageTracker {
     for (const watcher of this.convDirWatchers) {
       try {
         watcher.close();
-      } catch { /* ignore */ }
+      } catch (e: unknown) {
+        this.logger?.(`[UsageTracker] Watcher close failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
     }
     this.convDirWatchers = [];
     this.dbWorkspaceCache.clear();

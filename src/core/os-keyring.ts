@@ -109,6 +109,7 @@ if ($success) { exit 0 } else { exit 2 }
       child.on("error", () => resolve(false));
       child.on("close", (code) => resolve(code === 0));
 
+      child.stdin.on("error", () => {});
       child.stdin.write(jsonStr);
       child.stdin.end();
     });
@@ -116,21 +117,19 @@ if ($success) { exit 0 } else { exit 2 }
 
   private static async writeMacCredential(jsonStr: string): Promise<boolean> {
     return new Promise((resolve) => {
-      const child = spawn("security", [
-        "add-generic-password",
-        "-s",
-        "gemini:antigravity",
-        "-a",
-        "antigravity",
-        "-w",
-        jsonStr,
-        "-U",
-      ], {
-        stdio: "ignore",
+      // Pipe commands via stdin to security interactive mode (-i) to prevent
+      // credential tokens from appearing in process command-line arguments.
+      const child = spawn("security", ["-i"], {
+        stdio: ["pipe", "ignore", "ignore"],
       });
 
       child.on("error", () => resolve(false));
       child.on("close", (code) => resolve(code === 0));
+
+      child.stdin.on("error", () => {});
+      const escaped = jsonStr.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+      child.stdin.write(`add-generic-password -s "gemini:antigravity" -a "antigravity" -w "${escaped}" -U\nquit\n`);
+      child.stdin.end();
     });
   }
 
@@ -150,8 +149,10 @@ if ($success) { exit 0 } else { exit 2 }
       child.on("error", () => resolve(false));
       child.on("close", (code) => resolve(code === 0));
 
+      child.stdin.on("error", () => {});
       child.stdin.write(jsonStr);
       child.stdin.end();
     });
   }
 }
+

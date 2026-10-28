@@ -734,22 +734,244 @@ function render() {
   }
 }
 
-function makeBarHtml(label, pct, resetIso) {
+function makeBarHtml(rowKey, label, pct, resetIso) {
   var p = typeof pct === "number" ? Math.min(100, Math.max(0, pct)) : 100;
   var cls = p < 20 ? "err" : p < 40 ? "warn" : "";
   var resetText = fmtTime(resetIso);
-  var rTag = (p < 100 && resetIso) ? '<span class="reset-tag ' + (resetText !== "ready" ? "active" : "") + '" data-reset="' + resetIso + '">' + resetText + '</span>' : '';
+  var rTag = (p < 100 && resetIso) ? '<span class="reset-tag ' + (resetText !== "ready" ? "active" : "") + '" data-reset="' + esc(resetIso) + '">' + esc(resetText) + '</span>' : '<span class="reset-tag" style="display:none;" data-reset=""></span>';
   var scale = (p / 100).toFixed(3);
-  return '<div class="quota-row">' +
+  return '<div class="quota-row" data-row-key="' + esc(rowKey) + '">' +
     '<div style="display:flex;align-items:center;gap:3px;flex:1;min-width:0;overflow:hidden;">' +
-      '<span style="color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(label) + '</span>' +
+      '<span class="row-label" style="color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(label) + '</span>' +
       rTag +
     '</div>' +
     '<div style="display:flex;align-items:center;gap:4px;width:48%;min-width:55px;max-width:110px;flex-shrink:0;">' +
       '<div class="progress-bg"><div class="progress-fill ' + cls + '" style="transform:scaleX(' + scale + ');"></div></div>' +
-      '<span style="font-family:var(--mono);font-size:9.5px;width:26px;text-align:right;flex-shrink:0;">' + p + '%</span>' +
+      '<span class="pct-text" style="font-family:var(--mono);font-size:9.5px;width:26px;text-align:right;flex-shrink:0;">' + p + '%</span>' +
     '</div>' +
   '</div>';
+}
+
+function updateQuotaRow(rowEl, label, pct, resetIso) {
+  var p = typeof pct === "number" ? Math.min(100, Math.max(0, pct)) : 100;
+  var cls = p < 20 ? "err" : p < 40 ? "warn" : "";
+  var scale = (p / 100).toFixed(3);
+  var resetText = fmtTime(resetIso);
+
+  var fillEl = rowEl.querySelector(".progress-fill");
+  if (fillEl) {
+    var desiredClass = "progress-fill " + cls;
+    if (fillEl.className !== desiredClass) fillEl.className = desiredClass;
+    var desiredTransform = "scaleX(" + scale + ")";
+    if (fillEl.style.transform !== desiredTransform) fillEl.style.transform = desiredTransform;
+  }
+
+  var pctEl = rowEl.querySelector(".pct-text");
+  if (pctEl && pctEl.textContent !== (p + "%")) {
+    pctEl.textContent = p + "%";
+  }
+
+  var rTag = rowEl.querySelector(".reset-tag");
+  if (rTag) {
+    if (p < 100 && resetIso) {
+      rTag.style.display = "";
+      rTag.className = "reset-tag " + (resetText !== "ready" ? "active" : "");
+      rTag.textContent = resetText;
+      rTag.setAttribute("data-reset", resetIso);
+    } else {
+      rTag.style.display = "none";
+    }
+  }
+
+  var lblEl = rowEl.querySelector(".row-label");
+  if (lblEl && lblEl.textContent !== label) {
+    lblEl.textContent = label;
+  }
+}
+
+function patchCard(card, acc, idx, quotas, state, hideEmail) {
+  var email = acc.email || "";
+  var displayEmail = hideEmail ? ("Account " + (idx + 1)) : (acc.alias ? (acc.alias + " (" + email.split("@")[0] + ")") : email);
+  var titleAttr = hideEmail ? ("Account " + (idx + 1)) : email;
+  var isDis = acc.status === "disabled";
+  var isAct = !isDis && email && email.toLowerCase() === ((state && state.activeEmail) || "").toLowerCase();
+
+  var cardClass = "card " + (isAct ? "active" : "") + " " + (isDis ? "disabled" : "");
+  if (card.className !== cardClass) card.className = cardClass;
+
+  var tierEl = card.querySelector(".tier-tag");
+  if (tierEl && tierEl.textContent !== (acc.tier || "pro")) {
+    tierEl.textContent = acc.tier || "pro";
+  }
+
+  var titleEl = card.querySelector(".card-title");
+  if (titleEl) {
+    if (titleEl.textContent !== displayEmail) titleEl.textContent = displayEmail;
+    if (titleEl.title !== titleAttr) titleEl.title = titleAttr;
+    titleEl.setAttribute("data-email", email);
+    titleEl.setAttribute("data-alias", acc.alias || "");
+  }
+
+  var affEl = card.querySelector('[data-action="toggleAffinity"]');
+  var affVal = (acc.affinity || "all").toUpperCase();
+  if (affEl) {
+    if (affEl.textContent !== affVal) affEl.textContent = affVal;
+    affEl.setAttribute("data-email", email);
+    affEl.setAttribute("data-affinity", acc.affinity || "all");
+    affEl.title = "Model Affinity: " + (acc.affinity || "all") + " (click to change)";
+  }
+
+  var roleEl = card.querySelector('[data-action="toggleRole"]');
+  var roleVal = (acc.role || "primary").toUpperCase();
+  if (roleEl) {
+    if (roleEl.textContent !== roleVal) roleEl.textContent = roleVal;
+    roleEl.setAttribute("data-email", email);
+    roleEl.setAttribute("data-role", acc.role || "primary");
+    roleEl.title = "Pool Role: " + (acc.role || "primary") + " (click to change)";
+  }
+
+  var headLeft = card.querySelector(".card-head > div:first-child");
+  if (headLeft) {
+    var healthTag = headLeft.querySelector(".err-tag");
+    var hasHealthErr = acc.health && acc.health !== "healthy";
+    if (hasHealthErr) {
+      var healthText = acc.health === "expired" ? "EXPIRED" : acc.health === "tos_required" ? "TOS REQ" : "ERROR";
+      if (!healthTag) {
+        healthTag = document.createElement("span");
+        healthTag.className = "err-tag";
+        headLeft.appendChild(healthTag);
+      }
+      healthTag.textContent = healthText;
+      healthTag.title = acc.healthError || "Token requires re-authentication";
+    } else if (healthTag) {
+      healthTag.remove();
+    }
+
+    var statusTag = headLeft.querySelector(".active-tag, .dis-tag");
+    var desiredTagClass = isAct ? "active-tag" : isDis ? "dis-tag" : "";
+    var desiredTagText = isAct ? "ACTIVE" : isDis ? "OFF" : "";
+    if (desiredTagClass) {
+      if (!statusTag) {
+        statusTag = document.createElement("span");
+        headLeft.appendChild(statusTag);
+      }
+      statusTag.className = desiredTagClass;
+      statusTag.textContent = desiredTagText;
+    } else if (statusTag) {
+      statusTag.remove();
+    }
+  }
+
+  var switchInput = card.querySelector('input[type="checkbox"][data-action="toggleAccount"]');
+  if (switchInput) {
+    switchInput.setAttribute("data-email", email);
+    if (switchInput.checked !== !isDis) {
+      switchInput.checked = !isDis;
+    }
+  }
+
+  var q = (email && quotas[email.toLowerCase()]) || {};
+  var fams = (Array.isArray(q.families) && q.families.length) ? q.families : [{ key: "gemini", label: "Gemini", percent: 100 }, { key: "claude", label: "Claude", percent: 100 }];
+  var qContainer = card.querySelector(".quota-container");
+  if (!qContainer) {
+    qContainer = document.createElement("div");
+    qContainer.className = "quota-container";
+    qContainer.style.cssText = "display:flex;flex-direction:column;gap:3px;";
+    card.appendChild(qContainer);
+  }
+
+  var desiredRowKeys = [];
+  for (var fi = 0; fi < fams.length; fi++) {
+    var f = fams[fi];
+    if (!f) continue;
+    var fKey = f.key || ("fam" + fi);
+    var key5h = fKey + "-5h";
+    desiredRowKeys.push(key5h);
+    var row5h = qContainer.querySelector('[data-row-key="' + key5h + '"]');
+    var p5h = f.limit5h ? f.limit5h.percent : (f.percent || 100);
+    var r5h = f.limit5h ? f.limit5h.resetTime : f.resetTime;
+    var lbl5h = (f.label || "Model") + " (5h)";
+    if (row5h) {
+      updateQuotaRow(row5h, lbl5h, p5h, r5h);
+    } else {
+      qContainer.insertAdjacentHTML("beforeend", makeBarHtml(key5h, lbl5h, p5h, r5h));
+    }
+
+    if (f.limitWeekly) {
+      var key7d = fKey + "-7d";
+      desiredRowKeys.push(key7d);
+      var row7d = qContainer.querySelector('[data-row-key="' + key7d + '"]');
+      var p7d = f.limitWeekly.percent;
+      var r7d = f.limitWeekly.resetTime;
+      var lbl7d = (f.label || "Model") + " (7d)";
+      if (row7d) {
+        updateQuotaRow(row7d, lbl7d, p7d, r7d);
+      } else {
+        qContainer.insertAdjacentHTML("beforeend", makeBarHtml(key7d, lbl7d, p7d, r7d));
+      }
+    }
+  }
+
+  var existingRows = qContainer.querySelectorAll(".quota-row");
+  for (var ri = 0; ri < existingRows.length; ri++) {
+    var rk = existingRows[ri].getAttribute("data-row-key");
+    if (rk && desiredRowKeys.indexOf(rk) === -1) {
+      existingRows[ri].remove();
+    }
+  }
+}
+
+function createCardElement(acc, idx, quotas, state, hideEmail) {
+  var email = acc.email || "";
+  var displayEmail = hideEmail ? ("Account " + (idx + 1)) : (acc.alias ? (acc.alias + " (" + email.split("@")[0] + ")") : email);
+  var titleAttr = hideEmail ? ("Account " + (idx + 1)) : email;
+  var isDis = acc.status === "disabled";
+  var isAct = !isDis && email && email.toLowerCase() === ((state && state.activeEmail) || "").toLowerCase();
+  var q = (email && quotas[email.toLowerCase()]) || {};
+  var fams = (Array.isArray(q.families) && q.families.length) ? q.families : [{ key: "gemini", label: "Gemini", percent: 100 }, { key: "claude", label: "Claude", percent: 100 }];
+
+  var qHtml = '<div class="quota-container" style="display:flex;flex-direction:column;gap:3px;">' + fams.map(function(f, fi) {
+    if (!f) return "";
+    var fKey = f.key || ("fam" + fi);
+    var html = makeBarHtml(fKey + "-5h", (f.label || "Model") + " (5h)", f.limit5h ? f.limit5h.percent : (f.percent || 100), f.limit5h ? f.limit5h.resetTime : f.resetTime);
+    if (f.limitWeekly) html += makeBarHtml(fKey + "-7d", (f.label || "Model") + " (7d)", f.limitWeekly.percent, f.limitWeekly.resetTime);
+    return html;
+  }).join("") + '</div>';
+
+  var tag = isAct ? '<span class="active-tag">ACTIVE</span>' : isDis ? '<span class="dis-tag">OFF</span>' : '';
+  var affTag = '<span class="chip-tag" data-action="toggleAffinity" data-email="' + esc(email) + '" data-affinity="' + esc(acc.affinity || "all") + '" title="Model Affinity: ' + esc(acc.affinity || "all") + ' (click to change)">' + esc((acc.affinity || "all").toUpperCase()) + '</span>';
+  var roleTag = '<span class="chip-tag" data-action="toggleRole" data-email="' + esc(email) + '" data-role="' + esc(acc.role || "primary") + '" title="Pool Role: ' + esc(acc.role || "primary") + ' (click to change)">' + esc((acc.role || "primary").toUpperCase()) + '</span>';
+  var healthBadge = (acc.health && acc.health !== "healthy")
+    ? ('<span class="err-tag" title="' + esc(acc.healthError || "Token requires re-authentication") + '">' + (acc.health === "expired" ? "EXPIRED" : acc.health === "tos_required" ? "TOS REQ" : "ERROR") + '</span>')
+    : "";
+  var reauthBtn = (acc.health && acc.health !== "healthy")
+    ? ('<button class="btn btn-sec btn-icon" data-action="reauthAccount" data-email="' + esc(email) + '" title="1-Click Re-Auth" style="color:var(--warn);border-color:var(--warn);font-size:8.5px;padding:1px 4px;">Re-Auth</button>')
+    : "";
+
+  var div = document.createElement("div");
+  div.className = "card " + (isAct ? "active" : "") + " " + (isDis ? "disabled" : "");
+  div.setAttribute("data-account-email", email.toLowerCase());
+  div.innerHTML = '<div class="card-head">' +
+    '<div style="display:flex;align-items:center;gap:3px;overflow:hidden;flex:1;min-width:0;">' +
+      '<span class="tier-tag">' + esc(acc.tier || "pro") + '</span>' +
+      '<span class="card-title" title="' + esc(titleAttr) + '" data-action="editAlias" data-email="' + esc(email) + '" data-alias="' + esc(acc.alias || "") + '" style="cursor:pointer;">' + esc(displayEmail) + '</span>' +
+      affTag +
+      roleTag +
+      healthBadge +
+      tag +
+    '</div>' +
+    '<div style="display:flex;align-items:center;gap:3px;flex-shrink:0;">' +
+      reauthBtn +
+      '<label class="switch" title="' + (isDis ? "Enable in pool" : "Disable in pool") + '">' +
+        '<input type="checkbox" ' + (isDis ? "" : "checked") + ' data-action="toggleAccount" data-email="' + esc(email) + '" />' +
+        '<span class="slider"></span>' +
+      '</label>' +
+      '<button class="btn btn-sec btn-icon" data-action="refreshAccount" data-email="' + esc(email) + '" title="Refresh">&#x21bb;</button>' +
+      '<button class="btn btn-sec btn-icon" data-action="removeAccount" data-email="' + esc(email) + '" title="Remove">&times;</button>' +
+    '</div>' +
+  '</div>' +
+  qHtml;
+  return div;
 }
 
 var lastAccountsFp = "";
@@ -798,61 +1020,65 @@ function renderAccounts() {
   if (fp === lastAccountsFp) return;
   lastAccountsFp = fp;
 
-  var cardsHtml = visibleAccs.map(function(acc, idx) {
-    var email = acc.email || "";
-    var displayEmail = hideEmail ? ("Account " + (idx + 1)) : (acc.alias ? (acc.alias + " (" + email.split("@")[0] + ")") : email);
-    var titleAttr = hideEmail ? ("Account " + (idx + 1)) : email;
-    var isDis = acc.status === "disabled";
-    var isAct = !isDis && email && email.toLowerCase() === ((state && state.activeEmail) || "").toLowerCase();
-    var q = (email && quotas[email.toLowerCase()]) || {};
-    var fams = (Array.isArray(q.families) && q.families.length) ? q.families : [{ key: "gemini", label: "Gemini", percent: 100 }, { key: "claude", label: "Claude", percent: 100 }];
-    var qHtml = '<div style="display:flex;flex-direction:column;gap:3px;">' + fams.map(function(f) {
-      if (!f) return "";
-      var html = makeBarHtml((f.label || "Model") + " (5h)", f.limit5h ? f.limit5h.percent : (f.percent || 100), f.limit5h ? f.limit5h.resetTime : f.resetTime);
-      if (f.limitWeekly) html += makeBarHtml((f.label || "Model") + " (7d)", f.limitWeekly.percent, f.limitWeekly.resetTime);
-      return html;
-    }).join("") + '</div>';
-    var tag = isAct ? '<span class="active-tag">ACTIVE</span>' : isDis ? '<span class="dis-tag">OFF</span>' : '';
-    var affTag = '<span class="chip-tag" data-action="toggleAffinity" data-email="' + esc(email) + '" data-affinity="' + esc(acc.affinity || "all") + '" title="Model Affinity: ' + esc(acc.affinity || "all") + ' (click to change)">' + esc((acc.affinity || "all").toUpperCase()) + '</span>';
-    var roleTag = '<span class="chip-tag" data-action="toggleRole" data-email="' + esc(email) + '" data-role="' + esc(acc.role || "primary") + '" title="Pool Role: ' + esc(acc.role || "primary") + ' (click to change)">' + esc((acc.role || "primary").toUpperCase()) + '</span>';
-    var healthBadge = (acc.health && acc.health !== "healthy")
-      ? ('<span class="err-tag" title="' + esc(acc.healthError || "Token requires re-authentication") + '">' + (acc.health === "expired" ? "EXPIRED" : acc.health === "tos_required" ? "TOS REQ" : "ERROR") + '</span>')
-      : "";
-    var reauthBtn = (acc.health && acc.health !== "healthy")
-      ? ('<button class="btn btn-sec btn-icon" data-action="reauthAccount" data-email="' + esc(email) + '" title="1-Click Re-Auth" style="color:var(--warn);border-color:var(--warn);font-size:8.5px;padding:1px 4px;">Re-Auth</button>')
-      : "";
-    return '<div class="card ' + (isAct ? "active" : "") + ' ' + (isDis ? "disabled" : "") + '">' +
-      '<div class="card-head">' +
-        '<div style="display:flex;align-items:center;gap:3px;overflow:hidden;flex:1;min-width:0;">' +
-          '<span class="tier-tag">' + esc(acc.tier || "pro") + '</span>' +
-          '<span class="card-title" title="' + esc(titleAttr) + '" data-action="editAlias" data-email="' + esc(email) + '" data-alias="' + esc(acc.alias || "") + '" style="cursor:pointer;">' + esc(displayEmail) + '</span>' +
-          affTag +
-          roleTag +
-          healthBadge +
-          tag +
-        '</div>' +
-        '<div style="display:flex;align-items:center;gap:3px;flex-shrink:0;">' +
-          reauthBtn +
-          '<label class="switch" title="' + (isDis ? "Enable in pool" : "Disable in pool") + '">' +
-            '<input type="checkbox" ' + (isDis ? "" : "checked") + ' data-action="toggleAccount" data-email="' + esc(email) + '" />' +
-            '<span class="slider"></span>' +
-          '</label>' +
-          '<button class="btn btn-sec btn-icon" data-action="refreshAccount" data-email="' + esc(email) + '" title="Refresh">&#x21bb;</button>' +
-          '<button class="btn btn-sec btn-icon" data-action="removeAccount" data-email="' + esc(email) + '" title="Remove">&times;</button>' +
-        '</div>' +
-      '</div>' +
-      qHtml +
-    '</div>';
-  }).join("");
+  var emptyPlaceholder = list.querySelector(".empty");
+  if (emptyPlaceholder) emptyPlaceholder.remove();
 
-  var expandBtn = "";
-  if (accs.length > 3) {
-    expandBtn = !accountsExpanded
-      ? '<button class="btn btn-sec" data-action="toggleExpandAccounts" style="width:100%;margin-top:2px;font-size:9.5px;padding:3px 6px;">Show more (' + (accs.length - 3) + ' more) &#x25bc;</button>'
-      : '<button class="btn btn-sec" data-action="toggleExpandAccounts" style="width:100%;margin-top:2px;font-size:9.5px;padding:3px 6px;">Show less &#x25b2;</button>';
+  var existingCards = {};
+  var cardNodes = list.querySelectorAll(".card[data-account-email]");
+  for (var ci = 0; ci < cardNodes.length; ci++) {
+    var emailAttr = cardNodes[ci].getAttribute("data-account-email");
+    if (emailAttr) existingCards[emailAttr] = cardNodes[ci];
   }
 
-  list.innerHTML = cardsHtml + expandBtn;
+  var visibleEmails = {};
+  for (var vi = 0; vi < visibleAccs.length; vi++) {
+    var vacc = visibleAccs[vi];
+    var vEmail = (vacc.email || "").toLowerCase();
+    visibleEmails[vEmail] = true;
+    var existingCard = existingCards[vEmail];
+    if (existingCard) {
+      patchCard(existingCard, vacc, vi, quotas, state, hideEmail);
+    } else {
+      var newCard = createCardElement(vacc, vi, quotas, state, hideEmail);
+      list.appendChild(newCard);
+      existingCards[vEmail] = newCard;
+    }
+  }
+
+  for (var oldEmail in existingCards) {
+    if (!visibleEmails[oldEmail]) {
+      existingCards[oldEmail].remove();
+    }
+  }
+
+  for (var oi = 0; oi < visibleAccs.length; oi++) {
+    var ordEmail = (visibleAccs[oi].email || "").toLowerCase();
+    var cardToOrder = existingCards[ordEmail];
+    if (cardToOrder) {
+      list.appendChild(cardToOrder);
+    }
+  }
+
+  var expandBtn = list.querySelector('button[data-action="toggleExpandAccounts"]');
+  if (accs.length > 3) {
+    var btnText = !accountsExpanded
+      ? ("Show more (" + (accs.length - 3) + " more) \u25bc")
+      : "Show less \u25b2";
+    if (!expandBtn) {
+      expandBtn = document.createElement("button");
+      expandBtn.className = "btn btn-sec";
+      expandBtn.setAttribute("data-action", "toggleExpandAccounts");
+      expandBtn.style.cssText = "width:100%;margin-top:2px;font-size:9.5px;padding:3px 6px;";
+      list.appendChild(expandBtn);
+    } else {
+      list.appendChild(expandBtn);
+    }
+    if (expandBtn.textContent !== btnText) {
+      expandBtn.textContent = btnText;
+    }
+  } else if (expandBtn) {
+    expandBtn.remove();
+  }
 }
 
 var lastStatsWidgetFp = "";

@@ -6,7 +6,11 @@ import {
   type AccountStatus,
   type AccountTier,
   AuthError,
+  type AutoSelectOptions,
+  type BindingWindow,
+  type BurnRateInfo,
   type EffectiveQuota,
+  type FamilyQuota,
   type ModelAffinity,
   type OAuthTokens,
   type OpenAGConfig,
@@ -16,8 +20,9 @@ import {
 } from "../types.js";
 import { OAuthFlow } from "./oauth-flow.js";
 import { exportPool, importPool } from "./pool-crypto.js";
-import { FALLBACK_ENDPOINT, PRIMARY_ENDPOINT } from "./quota-monitor.js";
+import { FALLBACK_ENDPOINT, PRIMARY_ENDPOINT, type QuotaMonitor } from "./quota-monitor.js";
 import { getCodeAssistBody, getUserAgent } from "./sqlite-utils.js";
+import type { StatsManager } from "./stats-manager.js";
 import type { UsageTracker } from "./usage-tracker.js";
 import { USSBridge } from "./uss-bridge.js";
 import type { LanguageServerClient } from "./language-server-client.js";
@@ -45,8 +50,59 @@ function resolveModelFamily(modelName?: string): "gemini" | "claude" | "other" {
   return "other";
 }
 
-const DRAIN_WINDOW_MS = 30 * 60 * 1000;
-const IMMINENT_RESET_MS = 45 * 60 * 1000;
+export const HYSTERESIS_DELTA = 15;
+export const DRAIN_WINDOW_MS = 30 * 60 * 1000;
+export const IMMINENT_RESET_MS = 45 * 60 * 1000;
+
+export function calculateEffectiveQuota(fam: FamilyQuota): EffectiveQuota {
+  const p5h = fam.limit5h?.percent ?? fam.percent ?? 100;
+  const pWk = fam.limitWeekly?.percent ?? 100;
+
+  const t5hStr = fam.limit5h?.resetTime ?? fam.resetTime;
+  const tWkStr = fam.limitWeekly?.resetTime;
+
+  const t5h = t5hStr ? Date.parse(t5hStr) : Infinity;
+  const validT5h = Number.isNaN(t5h) ? Infinity : t5h;
+
+  const tWk = tWkStr ? Date.parse(tWkStr) : Infinity;
+  const validTWk = Number.isNaN(tWk) ? Infinity : tWk;
+
+  let percent: number;
+  let resetTs: number;
+  let bindingWindow: BindingWindow;
+
+  if (pWk <= 0) {
+    percent = 0;
+    if (p5h < pWk) {
+      bindingWindow = "5h";
+      resetTs = validT5h;
+    } else if (pWk < p5h) {
+      bindingWindow = "weekly";
+      resetTs = validTWk;
+    } else {
+      bindingWindow = "both";
+      resetTs = Math.min(validT5h, validTWk);
+    }
+  } else if (p5h < pWk) {
+    percent = Math.max(0, p5h);
+    bindingWindow = "5h";
+    resetTs = validT5h;
+  } else if (pWk < p5h) {
+    percent = Math.max(0, pWk);
+    bindingWindow = "weekly";
+    resetTs = validTWk;
+  } else {
+    percent = Math.max(0, p5h);
+    bindingWindow = "both";
+    resetTs = Math.min(validT5h, validTWk);
+  }
+
+  return {
+    percent,
+    resetTs,
+    bindingWindow,
+  };
+}
 
 function matchesModelAffinity(account: Account, modelFamily: "gemini" | "claude" | "other"): boolean {
   if (!account.affinity || account.affinity === "all" || modelFamily === "other") return true;
@@ -65,15 +121,57 @@ export class TokenManager {
   private lastSyncedEmail: string | null = null;
   private selectAccountLock: Promise<void> = Promise.resolve();
   private lsClient?: LanguageServerClient;
+  private statsManager?: StatsManager;
+  private quotaMonitor?: QuotaMonitor;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly log: (msg: string) => void,
     private readonly usageTracker?: UsageTracker,
-  ) {}
+    statsManager?: StatsManager,
+  ) {
+    this.statsManager = statsManager;
+  }
 
   public setLanguageServerClient(client: LanguageServerClient): void {
     this.lsClient = client;
+  }
+
+  public setStatsManager(statsManager: StatsManager): void {
+    this.statsManager = statsManager;
+  }
+
+  public setQuotaMonitor(quotaMonitor: QuotaMonitor): void {
+    this.quotaMonitor = quotaMonitor;
+  }
+
+  public markAccountExhausted(email: string, model?: string, cooldownMs?: number): void {
+    this.quotaMonitor?.markAccountExhausted(email, model, cooldownMs);
+  }
+
+  public async restoreAccountStatus(email: string): Promise<Account | null> {
+    const acc = this.accounts.find((a) => a.email.toLowerCase() === email.toLowerCase());
+    if (!acc) return null;
+    if (acc.status === "error") {
+      acc.status = this.activeEmail.toLowerCase() === email.toLowerCase() ? "active" : "idle";
+      acc.updatedAt = Date.now();
+      await this.persist();
+      this.onAccountChangeEmitter.fire();
+    }
+    return acc;
+  }
+
+  public getBurnRate(windowMinutes = 15): BurnRateInfo | null {
+    if (this.statsManager && typeof this.statsManager.getBurnRate === "function") {
+      return this.statsManager.getBurnRate(windowMinutes);
+    }
+    if (this.usageTracker) {
+      const sm = (this.usageTracker as unknown as { statsManager?: StatsManager }).statsManager;
+      if (sm && typeof sm.getBurnRate === "function") {
+        return sm.getBurnRate(windowMinutes);
+      }
+    }
+    return null;
   }
 
   public async initialize(): Promise<void> {
@@ -333,9 +431,23 @@ export class TokenManager {
     }
   }
 
-  public getEffectiveQuota(email: string, quotas: Record<string, AccountQuota>, targetModel?: string): EffectiveQuota {
-    const q = quotas[email.toLowerCase()];
-    if (!q?.families || q.families.length === 0) return { percent: -1, resetTs: Infinity };
+  public getEffectiveQuota(fam: FamilyQuota): EffectiveQuota;
+  public getEffectiveQuota(email: string, quotas: Record<string, AccountQuota>, targetModel?: string): EffectiveQuota;
+  public getEffectiveQuota(
+    famOrEmail: FamilyQuota | string,
+    quotas?: Record<string, AccountQuota>,
+    targetModel?: string,
+  ): EffectiveQuota {
+    if (typeof famOrEmail === "object" && famOrEmail !== null && "key" in famOrEmail) {
+      return calculateEffectiveQuota(famOrEmail);
+    }
+
+    const email = typeof famOrEmail === "string" ? famOrEmail : "";
+    const quotaMap = quotas || {};
+    const q = quotaMap[email.toLowerCase()];
+    if (!q?.families || q.families.length === 0) {
+      return { percent: -1, resetTs: Infinity, bindingWindow: "both" };
+    }
 
     const modelName = targetModel || this.usageTracker?.getActiveModel() || "";
     if (modelName) {
@@ -344,7 +456,11 @@ export class TokenManager {
         const directModel = q.models.find((m) => m.name.toLowerCase() === lowerModel);
         if (directModel) {
           const resetTs = directModel.resetTime ? Date.parse(directModel.resetTime) : Infinity;
-          return { percent: directModel.percent, resetTs: Number.isNaN(resetTs) ? Infinity : resetTs };
+          return {
+            percent: directModel.percent,
+            resetTs: Number.isNaN(resetTs) ? Infinity : resetTs,
+            bindingWindow: "both",
+          };
         }
       }
 
@@ -352,42 +468,64 @@ export class TokenManager {
       if (famKey !== "other") {
         const fam = q.families.find((f) => f.key === famKey);
         if (fam) {
-          const p5h = fam.limit5h?.percent ?? fam.percent ?? 100;
-          const pWk = fam.limitWeekly?.percent ?? 100;
-          const pct = pWk <= 0 ? 0 : Math.min(p5h, pWk);
-          const resetStr = (fam.limit5h && fam.limit5h.percent < 100) ? fam.limit5h.resetTime : fam.limitWeekly?.resetTime;
-          const resetTs = resetStr ? Date.parse(resetStr) : Infinity;
-          return { percent: pct, resetTs: Number.isNaN(resetTs) ? Infinity : resetTs };
+          return calculateEffectiveQuota(fam);
         }
-        return { percent: 0, resetTs: Infinity };
+        return { percent: 0, resetTs: Infinity, bindingWindow: "both" };
       }
     }
 
-    let minPct = 100, minResetTs = Infinity;
+    let minPct = 100;
+    let minResetTs = Infinity;
+    let bindingWindow: BindingWindow = "both";
+
     for (const f of q.families) {
-      const p5h = f.limit5h?.percent ?? f.percent ?? 100;
-      const pWk = f.limitWeekly?.percent ?? 100;
-      const pct = pWk <= 0 ? 0 : Math.min(p5h, pWk);
-      minPct = Math.min(minPct, pct);
-      const resetTime = (f.limit5h && f.limit5h.percent < 100) ? f.limit5h.resetTime : f.limitWeekly?.resetTime;
-      if (resetTime) {
-        const ts = Date.parse(resetTime);
-        if (!Number.isNaN(ts) && ts < minResetTs) minResetTs = ts;
+      const eff = calculateEffectiveQuota(f);
+      if (eff.percent < minPct) {
+        minPct = eff.percent;
+        minResetTs = eff.resetTs;
+        bindingWindow = eff.bindingWindow;
+      } else if (eff.percent === minPct) {
+        if (eff.resetTs < minResetTs) {
+          minResetTs = eff.resetTs;
+          bindingWindow = eff.bindingWindow;
+        }
       }
     }
-    return { percent: minPct, resetTs: minResetTs };
+    return { percent: minPct, resetTs: minResetTs, bindingWindow };
   }
 
   public async autoSelectHighestQuota(
-    quotas: Record<string, AccountQuota>,
+    quotasOrOptions?: Record<string, AccountQuota> | AutoSelectOptions,
     reason?: string,
     targetModel?: string,
+    options?: AutoSelectOptions,
   ): Promise<Account | null> {
     if (!this.isExtensionEnabled() || !this.isRotationEnabled() || this.accounts.length <= 1) return null;
     const available = this.accounts.filter((a) => a.status !== "disabled");
     if (available.length <= 1) return null;
 
-    const model = targetModel || this.usageTracker?.getActiveModel() || "Gemini 3.7 Flash High";
+    let quotas: Record<string, AccountQuota>;
+    let resolvedReason = reason;
+    let resolvedTargetModel = targetModel;
+    let resolvedOptions = options;
+
+    if (
+      quotasOrOptions &&
+      ("isRateLimitFailover" in quotasOrOptions ||
+        "forceSwitch" in quotasOrOptions ||
+        "hysteresisDelta" in quotasOrOptions ||
+        "quotas" in quotasOrOptions)
+    ) {
+      const opt = quotasOrOptions as AutoSelectOptions;
+      quotas = opt.quotas || this.quotaMonitor?.getAllQuotas() || {};
+      resolvedReason = opt.reason ?? resolvedReason;
+      resolvedTargetModel = opt.targetModel ?? resolvedTargetModel;
+      resolvedOptions = opt;
+    } else {
+      quotas = (quotasOrOptions as Record<string, AccountQuota>) || this.quotaMonitor?.getAllQuotas() || {};
+    }
+
+    const model = resolvedTargetModel || this.usageTracker?.getActiveModel() || "Gemini 3.7 Flash High";
     const famKey = resolveModelFamily(model);
     const now = Date.now();
     const activeEmail = this.activeEmail.toLowerCase();
@@ -408,42 +546,76 @@ export class TokenManager {
     const hasUsablePaid = paidPool.some((a) => this.getEffectiveQuota(a.email, quotas, model).percent > 10);
     const tierCandidates = hasUsablePaid ? paidPool : candidates;
 
-    const isRateLimitFailover = reason === "rate_limit_failover";
+    const isRateLimitFailover =
+      resolvedReason === "rate_limit_failover" || resolvedOptions?.isRateLimitFailover === true;
+    const forceSwitch = Boolean(resolvedOptions?.forceSwitch);
     const activeMatchesAffinity = activeAcc ? matchesModelAffinity(activeAcc, famKey) : true;
     const activeIsFreeWhenPaidAvailable = activeAcc?.tier === "free" && hasUsablePaid;
 
-    // 4. Timing Priority (Predictive Drain Window): Keep active account if it resets soon (<= 30 mins) with usable quota (> 5%)
-    // This invariant applies universally across ALL strategies to eliminate wasted quota before refill
+    // 4. Burn-Rate Predictive Refill Coordination (F3):
+    // Compare time-to-exhaustion against time-to-refill
+    const timeToRefillMs = activeInfo.resetTs - now;
+    const timeToRefillMinutes =
+      timeToRefillMs > 0 && activeInfo.resetTs !== Infinity
+        ? Math.ceil(timeToRefillMs / 60000)
+        : Infinity;
+
+    const burnRate = this.getBurnRate();
+    const tokensPerMin = burnRate?.tokensPerMin ?? 0;
+    const remainingTokens = Math.max(0, Math.round((activeInfo.percent / 100) * 1000000));
+
     if (
       !isRateLimitFailover &&
+      !forceSwitch &&
       !activeIsFreeWhenPaidAvailable &&
       activeMatchesAffinity &&
       activeInfo.percent > 5 &&
-      activeInfo.resetTs - now > 0 &&
-      activeInfo.resetTs - now <= DRAIN_WINDOW_MS
+      timeToRefillMs > 0 &&
+      activeInfo.resetTs !== Infinity
     ) {
-      return null;
+      if (tokensPerMin > 0) {
+        const timeToExhaustionMinutes = remainingTokens / tokensPerMin;
+        if (timeToExhaustionMinutes >= timeToRefillMinutes) {
+          this.log(
+            `[AutoRotate (Predictive Refill)] Retaining active account ${activeEmail}: exhaustion headroom (${Math.round(timeToExhaustionMinutes)}m) >= refill (${timeToRefillMinutes}m) [burn: ${tokensPerMin} tok/min, quota: ${activeInfo.percent}%]`,
+          );
+          return null;
+        }
+      } else if (timeToRefillMs <= DRAIN_WINDOW_MS) {
+        // Fallback when no recent burn-rate traffic: retain if within 30-minute drain window
+        this.log(
+          `[AutoRotate (Drain Window)] Retaining active account ${activeEmail}: imminent reset in ${Math.round(timeToRefillMs / 60000)}m <= 30m [quota: ${activeInfo.percent}%]`,
+        );
+        return null;
+      }
     }
 
     const strategy: RotationStrategy = this.config.rotationStrategy || "auto_highest";
 
     // 5. Strategy Dispatch
-    if (strategy === "cache_optimized" && !isRateLimitFailover) {
+    if (strategy === "cache_optimized" && !isRateLimitFailover && !forceSwitch) {
       // Sticky Cache: Stay on active account as long as it has > 15% quota, matches affinity, and is not free when paid is available
       if (!activeIsFreeWhenPaidAvailable && activeMatchesAffinity && activeInfo.percent > 15) {
         return null;
       }
-    } else if (strategy === "round_robin" && !isRateLimitFailover) {
+    } else if (strategy === "round_robin" && !isRateLimitFailover && !forceSwitch) {
       // Round Robin with Timing Priority: prioritize imminent refill candidate (<= 45m) if one exists
       const imminentCandidate = tierCandidates.find((a) => {
         const qInfo = this.getEffectiveQuota(a.email, quotas, model);
         const timeToReset = qInfo.resetTs - now;
-        return timeToReset > 0 && timeToReset <= IMMINENT_RESET_MS && qInfo.percent > 10 && a.email.toLowerCase() !== activeEmail;
+        return (
+          timeToReset > 0 &&
+          timeToReset <= IMMINENT_RESET_MS &&
+          qInfo.percent > 10 &&
+          a.email.toLowerCase() !== activeEmail
+        );
       });
 
       if (imminentCandidate) {
         const qInfo = this.getEffectiveQuota(imminentCandidate.email, quotas, model);
-        this.log(`[AutoRotate (Round-Robin Imminent)] Prioritizing imminent refill account ${imminentCandidate.email} (${qInfo.percent}%) from ${this.activeEmail}`);
+        this.log(
+          `[AutoRotate (Round-Robin Imminent)] Prioritizing imminent refill account ${imminentCandidate.email} (${qInfo.percent}%) from ${this.activeEmail}`,
+        );
         return this.selectAccount(imminentCandidate.email);
       }
 
@@ -454,7 +626,9 @@ export class TokenManager {
         if (!candidate) continue;
         const qInfo = this.getEffectiveQuota(candidate.email, quotas, model);
         if (qInfo.percent > 10 && candidate.email.toLowerCase() !== activeEmail) {
-          this.log(`[AutoRotate (Round-Robin)] Cycling to next account ${candidate.email} (${qInfo.percent}%) from ${this.activeEmail} (${activeInfo.percent}%) [model: ${model}]`);
+          this.log(
+            `[AutoRotate (Round-Robin)] Cycling to next account ${candidate.email} (${qInfo.percent}%) from ${this.activeEmail} (${activeInfo.percent}%) [model: ${model}]`,
+          );
           return this.selectAccount(candidate.email);
         }
       }
@@ -485,20 +659,49 @@ export class TokenManager {
     }
 
     const activeTimeToReset = activeInfo.resetTs - now;
-    const isActiveImminent = activeTimeToReset > 0 && activeTimeToReset <= IMMINENT_RESET_MS && activeInfo.percent > 10;
+    const isActiveImminent =
+      activeTimeToReset > 0 && activeTimeToReset <= IMMINENT_RESET_MS && activeInfo.percent > 10;
     const activeTierBonus = activeAcc?.tier === "ultra" ? 20 : activeAcc?.tier === "pro" ? 10 : 0;
-    const activeScore = activeMatchesAffinity && !activeIsFreeWhenPaidAvailable ? activeInfo.percent + (isActiveImminent ? 1000 : 0) + activeTierBonus : -1;
+    const activeScore =
+      activeMatchesAffinity && !activeIsFreeWhenPaidAvailable
+        ? activeInfo.percent + (isActiveImminent ? 1000 : 0) + activeTierBonus
+        : -1;
 
-    if (
-      !bestAcc ||
-      bestPct <= 0 ||
-      bestAcc.email.toLowerCase() === activeEmail ||
-      (!isRateLimitFailover && bestScore <= activeScore)
-    ) {
+    if (!bestAcc || bestPct <= 0 || bestAcc.email.toLowerCase() === activeEmail) {
       return null;
     }
 
-    this.log(`[AutoRotate] Switching to highest-quota account ${bestAcc.email} (${bestPct}%) from ${this.activeEmail} (${activeInfo.percent}%) [model: ${model}, reason: ${reason || "auto"}]`);
+    // Anti-Flapping Hysteresis (Prompt Cache Retention - F1):
+    // Retain the active account unless:
+    // a) Active account is exhausted (effective quota percent <= 10%),
+    // b) It is an explicit rate limit failover (isRateLimitFailover = true),
+    // c) Best candidate score exceeds active account score by strictly MORE than HYSTERESIS_DELTA (bestScore - activeScore > HYSTERESIS_DELTA), or
+    // d) Candidate matches model affinity when active does not.
+    const hysteresisDelta = resolvedOptions?.hysteresisDelta ?? HYSTERESIS_DELTA;
+    const isActiveExhausted = activeInfo.percent <= 10;
+    const candidateMatchesAffinityWhenActiveDoesNot =
+      !activeMatchesAffinity && matchesModelAffinity(bestAcc, famKey);
+
+    if (
+      !isActiveExhausted &&
+      !isRateLimitFailover &&
+      !candidateMatchesAffinityWhenActiveDoesNot &&
+      !activeIsFreeWhenPaidAvailable &&
+      !forceSwitch
+    ) {
+      if (bestScore - activeScore <= hysteresisDelta) {
+        this.log(
+          `[AutoRotate (Hysteresis)] Retaining active account ${this.activeEmail} (${activeInfo.percent}%, score: ${activeScore}). Best candidate ${bestAcc.email} score ${bestScore} delta ${bestScore - activeScore} <= ${hysteresisDelta}`,
+        );
+        return null;
+      }
+    } else if (!isRateLimitFailover && !isActiveExhausted && !forceSwitch && bestScore <= activeScore) {
+      return null;
+    }
+
+    this.log(
+      `[AutoRotate] Switching to highest-quota account ${bestAcc.email} (${bestPct}%) from ${this.activeEmail} (${activeInfo.percent}%) [model: ${model}, reason: ${resolvedReason || "auto"}]`,
+    );
     return this.selectAccount(bestAcc.email);
   }
 

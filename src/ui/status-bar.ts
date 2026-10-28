@@ -24,6 +24,22 @@ const fmtTime = (s?: string): string => {
 
 import type { StatsManager } from "../core/stats-manager.js";
 import type { TokenManager } from "../core/token-manager.js";
+import type { FamilyQuota } from "../types.js";
+
+function getBindingConstraint(fam: FamilyQuota): { percent: number; windowLabel: "5h" | "7d"; resetTime?: string } {
+  const p5h = fam.limit5h?.percent ?? fam.percent ?? 100;
+  const pWk = fam.limitWeekly?.percent;
+  if (pWk === undefined) {
+    return { percent: p5h, windowLabel: "5h", resetTime: fam.limit5h?.resetTime ?? fam.resetTime };
+  }
+  if (pWk <= 0) {
+    return { percent: 0, windowLabel: "7d", resetTime: fam.limitWeekly?.resetTime };
+  }
+  if (pWk < p5h) {
+    return { percent: pWk, windowLabel: "7d", resetTime: fam.limitWeekly?.resetTime };
+  }
+  return { percent: p5h, windowLabel: "5h", resetTime: fam.limit5h?.resetTime ?? fam.resetTime };
+}
 
 export class StatusBarHUD {
   private readonly item: vscode.StatusBarItem;
@@ -35,6 +51,7 @@ export class StatusBarHUD {
   private isEnabled = true;
   private rotateTimer: NodeJS.Timeout | null = null;
   private renderDebounce: NodeJS.Timeout | null = null;
+  private readonly rateLimitedAccounts = new Map<string, { model?: string; resetTs: number }>();
 
   constructor(
     context: vscode.ExtensionContext,
@@ -74,6 +91,17 @@ export class StatusBarHUD {
     this.scheduleRender();
   }
 
+  public markRateLimited(email: string, model?: string, cooldownUntil?: number): void {
+    const resetTs = cooldownUntil || Date.now() + 60000;
+    this.rateLimitedAccounts.set(email.toLowerCase(), { model, resetTs });
+    this.scheduleRender();
+  }
+
+  public clearRateLimit(email: string): void {
+    this.rateLimitedAccounts.delete(email.toLowerCase());
+    this.scheduleRender();
+  }
+
   public flashRotating(): void {
     this.isRotating = true;
     this.scheduleRender();
@@ -89,6 +117,10 @@ export class StatusBarHUD {
     if (this.currentEmail && quota.email.toLowerCase() !== this.currentEmail.toLowerCase()) return;
     this.currentQuota = quota;
     this.currentTier = quota.tier;
+    const rl = this.rateLimitedAccounts.get(quota.email.toLowerCase());
+    if (rl && quota.families.some((f) => f.percent > 10)) {
+      this.rateLimitedAccounts.delete(quota.email.toLowerCase());
+    }
     this.scheduleRender();
   }
 
@@ -120,9 +152,15 @@ export class StatusBarHUD {
     }
 
     const tierBadge = this.currentTier && this.currentTier !== "unknown" ? this.currentTier.toUpperCase() : "PRO";
-    const icon = this.isRotating ? "$(sync~spin)" : "$(sparkle)";
     const families = this.currentQuota?.families || [];
-    const quotaSummary = families.map((f) => `${f.percent}%`).join(" | ");
+    const quotaSummary = families
+      .map((f) => {
+        const binding = getBindingConstraint(f);
+        const name = f.label || (f.key === "claude" ? "Claude" : "Gemini");
+        return `${name}: ${binding.percent}% (⚡${binding.windowLabel})`;
+      })
+      .join(" | ");
+
     const activeModel = (this.currentContext?.model || "").toLowerCase();
     const activeFam =
       activeModel.includes("claude") ||
@@ -137,38 +175,71 @@ export class StatusBarHUD {
           : null;
     const targetFamily = activeFam ? families.find((f) => f.key === activeFam) : null;
     const effectivePct = targetFamily
-      ? targetFamily.percent
+      ? getBindingConstraint(targetFamily).percent
       : families.length > 0
-        ? Math.min(...families.map((f) => f.percent))
+        ? Math.min(...families.map((f) => getBindingConstraint(f).percent))
         : 100;
     const ctxPct = this.currentContext?.percent ?? 0;
     const ctxStr = this.currentContext?.limit ? ` [${fmtTokens(this.currentContext.current)}/${fmtTokens(this.currentContext.limit)}]` : "";
 
-    this.item.text = `${icon} ${tierBadge}${quotaSummary ? ` (${quotaSummary})` : ""}${ctxStr}`;
+    const rl = this.rateLimitedAccounts.get(this.currentEmail.toLowerCase());
+    const isRateLimited = !!rl && rl.resetTs > Date.now();
+    if (rl && !isRateLimited) {
+      this.rateLimitedAccounts.delete(this.currentEmail.toLowerCase());
+    }
+    const cooldownExpiresAt = (this.currentQuota as unknown as { cooldownExpiresAt?: number })?.cooldownExpiresAt;
+    const isCooldownActive = !!cooldownExpiresAt && cooldownExpiresAt > Date.now();
+    const inCooldown = isRateLimited || isCooldownActive;
+    const activeCooldownReset = isRateLimited ? rl?.resetTs : cooldownExpiresAt;
 
-    const isError = effectivePct < 20 || ctxPct >= 90;
-    const isWarning = effectivePct < 40 || ctxPct >= 80;
+    if (inCooldown) {
+      const cooldownStr = activeCooldownReset ? fmtTime(new Date(activeCooldownReset).toISOString()) : "cooldown";
+      const statusTag = isRateLimited ? ` [429 RATE-LIMITED: ${cooldownStr}]` : ` [COOLDOWN: ${cooldownStr}]`;
+      this.item.text = `${this.isRotating ? "$(sync~spin)" : "$(clock)"} ${tierBadge}${statusTag}${quotaSummary ? ` (${quotaSummary})` : ""}${ctxStr}`;
+      this.item.backgroundColor = new vscode.ThemeColor("statusBarItem.errorBackground");
+    } else {
+      const icon = this.isRotating ? "$(sync~spin)" : "$(sparkle)";
+      this.item.text = `${icon} ${tierBadge}${quotaSummary ? ` (${quotaSummary})` : ""}${ctxStr}`;
 
-    this.item.backgroundColor = isError
-      ? new vscode.ThemeColor("statusBarItem.errorBackground")
-      : isWarning
-        ? new vscode.ThemeColor("statusBarItem.warningBackground")
-        : undefined;
+      const isError = effectivePct < 20 || ctxPct >= 90;
+      const isWarning = effectivePct < 40 || ctxPct >= 80;
+
+      this.item.backgroundColor = isError
+        ? new vscode.ThemeColor("statusBarItem.errorBackground")
+        : isWarning
+          ? new vscode.ThemeColor("statusBarItem.warningBackground")
+          : undefined;
+    }
 
     const displayAccount = this.getDisplayAccount();
     const md = new vscode.MarkdownString(`$(account) **Active Account**: \`${displayAccount}\` [${tierBadge}]\n\n`, true);
     md.isTrusted = true;
     md.supportThemeIcons = true;
+
+    if (inCooldown && activeCooldownReset) {
+      const resetClock = fmtTime(new Date(activeCooldownReset).toISOString());
+      md.appendMarkdown(`$(warning) **Status**: \`Rate-Limited (429)\` — Cooldown active (resets ${resetClock})\n\n`);
+    } else if (effectivePct < 20) {
+      md.appendMarkdown(`$(error) **Status**: \`Low Quota Alert\` (${effectivePct}% remaining)\n\n`);
+    } else if (effectivePct < 40) {
+      md.appendMarkdown(`$(warning) **Status**: \`Quota Warning\` (${effectivePct}% remaining)\n\n`);
+    } else {
+      md.appendMarkdown(`$(check) **Status**: \`Healthy\`\n\n`);
+    }
+
     if (families.length > 0) {
       md.appendMarkdown("---\n\n");
       for (const fam of families) {
+        const binding = getBindingConstraint(fam);
         const p5h = fam.limit5h?.percent ?? fam.percent;
         const reset5h = p5h < 100 ? fmtTime(fam.limit5h?.resetTime ?? fam.resetTime) : "";
-        md.appendMarkdown(`**${fam.label} (5h)**: \`${makeBar(p5h)}\` **${p5h}%**${reset5h ? ` (resets ${reset5h})` : ""}\n\n`);
+        const tag5h = binding.windowLabel === "5h" ? " ⚡ Binding" : "";
+        md.appendMarkdown(`**${fam.label} (5h)**: \`${makeBar(p5h)}\` **${p5h}%**${reset5h ? ` (resets ${reset5h})` : ""}${tag5h}\n\n`);
         if (fam.limitWeekly) {
           const pWk = fam.limitWeekly.percent;
           const resetWk = pWk < 100 ? fmtTime(fam.limitWeekly.resetTime) : "";
-          md.appendMarkdown(`**${fam.label} (7d)**: \`${makeBar(pWk)}\` **${pWk}%**${resetWk ? ` (resets ${resetWk})` : ""}\n\n`);
+          const tagWk = binding.windowLabel === "7d" ? " ⚡ Binding" : "";
+          md.appendMarkdown(`**${fam.label} (7d)**: \`${makeBar(pWk)}\` **${pWk}%**${resetWk ? ` (resets ${resetWk})` : ""}${tagWk}\n\n`);
         }
       }
     }

@@ -7,6 +7,7 @@ export interface LanguageServerInfo {
   port: number;
   csrfToken: string;
   workspaceDir?: string;
+  isLiveProcess?: boolean;
 }
 
 export interface LanguageServerStatus {
@@ -16,8 +17,10 @@ export interface LanguageServerStatus {
 }
 
 export class LanguageServerClient {
+  public static preventLiveRestart = false;
   private cachedInfo: LanguageServerInfo | null = null;
   private cachedAt = 0;
+  private isMocked = false;
   private static readonly CACHE_TTL_MS = 30_000;
 
   constructor(
@@ -25,7 +28,45 @@ export class LanguageServerClient {
     private readonly log?: (msg: string) => void,
   ) {}
 
+  public setMockInfo(info: LanguageServerInfo | null): void {
+    this.cachedInfo = info;
+    this.cachedAt = Date.now();
+    this.isMocked = true;
+  }
+
+  public static isTestEnvironment(): boolean {
+    return (
+      process.env.NODE_ENV === "test" ||
+      process.env.OPENAG_TEST === "1" ||
+      process.env.OPENAG_TEST === "true" ||
+      Boolean(process.env.BUN_TEST) ||
+      Boolean(process.env.VITEST) ||
+      Boolean(process.env.JEST_WORKER_ID)
+    );
+  }
+
+  public static isLiveRestartGuarded(info: LanguageServerInfo | null): boolean {
+    if (LanguageServerClient.preventLiveRestart) {
+      return true;
+    }
+    if (LanguageServerClient.isTestEnvironment()) {
+      // In test environments, never restart live processes discovered from the OS process table.
+      // Mocked clients (where isLiveProcess is not true) are permitted to hit the mock server.
+      if (!info || info.isLiveProcess) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  public get isUsingMock(): boolean {
+    return this.isMocked;
+  }
+
   public async detect(): Promise<LanguageServerInfo | null> {
+    if (this.isMocked && this.cachedInfo) {
+      return this.cachedInfo;
+    }
     const now = Date.now();
     if (this.cachedInfo && now - this.cachedAt < LanguageServerClient.CACHE_TTL_MS) {
       return this.cachedInfo;
@@ -99,6 +140,13 @@ export class LanguageServerClient {
   public async restartServer(): Promise<boolean> {
     const info = await this.detect();
     if (!info) return false;
+
+    if (LanguageServerClient.isLiveRestartGuarded(info)) {
+      this.log?.("[LanguageServerClient] Live restart skipped: safety guard active in test environment");
+      this.invalidate();
+      return true;
+    }
+
     try {
       await fetch(`http://127.0.0.1:${info.port}/exa.language_server_pb.LanguageServerService/Restart`, {
         method: "POST",
@@ -108,7 +156,8 @@ export class LanguageServerClient {
           "Connect-Protocol-Version": "1",
         },
         body: JSON.stringify({}),
-      }).catch(() => {});
+        signal: AbortSignal.timeout(3000),
+      }).catch(() => null);
       this.invalidate();
       return true;
     } catch {
@@ -155,6 +204,7 @@ export class LanguageServerClient {
         port: Number.parseInt(portStr, 10),
         csrfToken,
         workspaceDir: dirMatch?.[1],
+        isLiveProcess: true,
       };
     } catch (err) {
       this.log?.(`Language server discovery error: ${err instanceof Error ? err.message : String(err)}`);
