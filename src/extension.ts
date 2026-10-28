@@ -202,10 +202,10 @@ export function activate(context: vscode.ExtensionContext): ExtensionExports {
         if (lsStatus?.email) ideEmail = lsStatus.email;
       }
       if (ideEmail && tokenManager) {
-        if (tokenManager.getActiveEmail().toLowerCase() !== ideEmail.toLowerCase()) {
+        if (!tokenManager.getActiveEmail()) {
           const matching = tokenManager.getAccounts().find((a) => a.email.toLowerCase() === ideEmail!.toLowerCase());
           if (matching) {
-            log(`[IDE Sync] Aligning active account to IDE current account: ${ideEmail}`);
+            log(`[IDE Sync] Initializing active account from IDE: ${ideEmail}`);
             await tokenManager.selectAccount(matching.email);
           }
         }
