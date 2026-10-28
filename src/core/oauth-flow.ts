@@ -52,7 +52,7 @@ async function fetchUserEmail(accessToken: string): Promise<string> {
 }
 
 export const OAuthFlow = {
-  startLogin(): Promise<OAuthFlowResult> {
+  startLogin(emailHint?: string): Promise<OAuthFlowResult> {
     return new Promise((resolve, reject) => {
       let server: http.Server | null = null;
       let timeout: NodeJS.Timeout | null = null;
@@ -115,6 +115,9 @@ export const OAuthFlow = {
           prompt: "select_account consent",
           state: expectedState,
         });
+        if (emailHint) {
+          authParams.set("login_hint", emailHint);
+        }
 
         const authUrl = `${GOOGLE_AUTH_URL}?${authParams.toString()}`;
         void vscode.env.openExternal(vscode.Uri.parse(authUrl)).then(

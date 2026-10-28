@@ -2,7 +2,7 @@
   "name": "openag",
   "displayName": "OpenAG",
   "description": "Multi-account pool and quota rotation for Google Antigravity.",
-  "version": "1.4.8",
+  "version": "1.4.9",
   "publisher": "polystree",
   "author": "Polystree",
   "license": "MIT",
@@ -116,6 +116,10 @@
       {
         "command": "openag.addAccount",
         "title": "OpenAG: Add Google Account"
+      },
+      {
+        "command": "openag.reauthAccount",
+        "title": "OpenAG: Re-authenticate Account with Google"
       },
       {
         "command": "openag.refreshQuotas",

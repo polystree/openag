@@ -331,6 +331,41 @@ export function activate(context: vscode.ExtensionContext): ExtensionExports {
         vscode.window.showErrorMessage(`OpenAG: Login failed - ${e instanceof Error ? e.message : String(e)}`);
       }
     }),
+    vscode.commands.registerCommand("openag.reauthAccount", async (emailArg?: string) => {
+      try {
+        let targetEmail = emailArg;
+        if (!targetEmail) {
+          const accounts = tokenManager?.getAccounts() ?? [];
+          if (accounts.length === 0) {
+            void vscode.window.showWarningMessage("OpenAG: No accounts to re-authenticate.");
+            return;
+          }
+          const items = accounts.map((a) => ({
+            label: a.alias ? `${a.alias} (${a.email})` : a.email,
+            description: a.role,
+            email: a.email,
+          }));
+          const pick = await vscode.window.showQuickPick(items, {
+            placeHolder: "Select account to re-authenticate with Google",
+          });
+          if (!pick) {
+            return;
+          }
+          targetEmail = pick.email;
+        }
+
+        const displayTarget = tokenManager?.getConfig()?.hideEmail ? maskEmail(targetEmail) : targetEmail;
+        vscode.window.showInformationMessage(`OpenAG: Opening browser to re-authenticate ${displayTarget}...`);
+        const acc = await tokenManager?.reauthAccount(targetEmail);
+        if (acc) {
+          void quotaMonitor?.refreshAccountQuota(acc.email);
+          const displayAcc = tokenManager?.getConfig()?.hideEmail ? maskEmail(acc.email) : acc.email;
+          vscode.window.showInformationMessage(`OpenAG: Successfully re-authenticated ${displayAcc}`);
+        }
+      } catch (e: unknown) {
+        vscode.window.showErrorMessage(`OpenAG: Re-auth failed - ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }),
     vscode.commands.registerCommand("openag.refreshQuotas", async () => {
       await quotaMonitor?.pollAllAccounts();
       vscode.window.showInformationMessage("OpenAG: Quotas refreshed");

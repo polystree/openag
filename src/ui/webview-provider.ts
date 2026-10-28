@@ -1017,9 +1017,6 @@ function createCardElement(acc, idx, quotas, state, hideEmail) {
   var healthBadge = (acc.health && acc.health !== "healthy")
     ? ('<span class="err-tag" title="' + esc(acc.healthError || "Token requires re-authentication") + '">' + (acc.health === "expired" ? "EXPIRED" : acc.health === "tos_required" ? "TOS REQ" : "ERROR") + '</span>')
     : "";
-  var reauthBtn = (acc.health && acc.health !== "healthy")
-    ? ('<button class="btn btn-sec btn-icon" data-action="reauthAccount" data-email="' + esc(email) + '" title="1-Click Re-Auth" style="color:var(--warn);border-color:var(--warn);font-size:8.5px;padding:1px 4px;">Re-Auth</button>')
-    : "";
 
   var div = document.createElement("div");
   div.className = "card " + (isAct ? "active" : "") + " " + (isDis ? "disabled" : "");
@@ -1034,7 +1031,9 @@ function createCardElement(acc, idx, quotas, state, hideEmail) {
       tag +
     '</div>' +
     '<div style="display:flex;align-items:center;gap:3px;flex-shrink:0;">' +
-      reauthBtn +
+      '<button class="btn btn-sec btn-icon" data-action="reauthAccount" data-email="' + esc(email) + '" title="Re-authenticate with Google">' +
+        '<svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" clip-rule="evenodd" d="M11 2a4 4 0 1 0-3.32 6.236L3 13v2h2v-1h1v-1h1v-1h1.764l.236-.236A4 4 0 0 0 11 2zm-2 4a2 2 0 1 1 4 0 2 2 0 0 1-4 0z"/></svg>' +
+      '</button>' +
       '<label class="switch" title="' + (isDis ? "Enable in pool" : "Disable in pool") + '">' +
         '<input type="checkbox" ' + (isDis ? "" : "checked") + ' data-action="toggleAccount" data-email="' + esc(email) + '" />' +
         '<span class="slider"></span>' +

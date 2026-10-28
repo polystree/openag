@@ -340,7 +340,10 @@ export class TokenManager {
   }
 
   public async reauthAccount(email: string): Promise<Account> {
-    const res = await OAuthFlow.startLogin();
+    const res = await OAuthFlow.startLogin(email);
+    if (res.email.toLowerCase() !== email.toLowerCase()) {
+      throw new Error(`Signed in as ${res.email}, but re-authenticating ${email}. Please choose the matching Google account.`);
+    }
     const existing = this.accounts.find((a) => a.email.toLowerCase() === email.toLowerCase());
     const updated = await this.addOrUpdateAccount({
       email: res.email,

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, spyOn } from "bun:test";
 import {
   createTestAccount,
   createAccountQuota,
@@ -10,6 +10,7 @@ import { MockLanguageServer } from "../mocks/language-server.js";
 import { HookServer } from "../../src/core/hook-server.js";
 import { exportPool, importPool } from "../../src/core/pool-crypto.js";
 import { StatusBarHUD } from "../../src/ui/status-bar.js";
+import { OAuthFlow } from "../../src/core/oauth-flow.js";
 import { setMockConfig } from "../mocks/vscode.js";
 import type { AccountQuota, OAuthTokens } from "../../src/types.js";
 
@@ -345,5 +346,60 @@ describe("Tier 3: Cross-Feature Combinations", () => {
     const selected = await tokenManager.autoSelectHighestQuota(quotas, "auto", "gemini-1.5-pro");
     expect(selected).toBeNull();
     expect(tokenManager.getActiveEmail()).toBe(acc1.email);
+  });
+
+  it("T3.16: TokenManager.reauthAccount rejects when browser signs into a different email", async () => {
+    const { tokenManager } = await setupTestTokenManager({
+      accounts: [acc1],
+      activeEmail: acc1.email,
+    });
+
+    const loginSpy = spyOn(OAuthFlow, "startLogin").mockResolvedValue({
+      email: "another-user@gmail.com",
+      tokens: {
+        accessToken: "tok-diff",
+        refreshToken: "ref-diff",
+        expiryDateSeconds: 12345,
+      },
+    });
+
+    try {
+      await expect(tokenManager.reauthAccount(acc1.email)).rejects.toThrow(
+        /Signed in as another-user@gmail.com, but re-authenticating user1@gmail.com/
+      );
+      expect(loginSpy).toHaveBeenCalledWith(acc1.email);
+    } finally {
+      loginSpy.mockRestore();
+    }
+  });
+
+  it("T3.17: TokenManager.reauthAccount succeeds and updates token when email matches", async () => {
+    const { tokenManager, context } = await setupTestTokenManager({
+      accounts: [acc1],
+      activeEmail: acc1.email,
+    });
+
+    const loginSpy = spyOn(OAuthFlow, "startLogin").mockResolvedValue({
+      email: acc1.email,
+      tokens: {
+        accessToken: "brand-new-acc-tok",
+        refreshToken: "brand-new-ref-tok",
+        expiryDateSeconds: 99999999,
+      },
+    });
+
+    try {
+      const updated = await tokenManager.reauthAccount(acc1.email);
+      expect(updated.email).toBe(acc1.email);
+      expect(loginSpy).toHaveBeenCalledWith(acc1.email);
+
+      const secretKey = `openag.secret.${acc1.email}`;
+      const storedSecret = await context.secrets.get(secretKey);
+      expect(storedSecret).not.toBeNull();
+      const parsedSecret = JSON.parse(storedSecret!);
+      expect(parsedSecret.refreshToken).toBe("brand-new-ref-tok");
+    } finally {
+      loginSpy.mockRestore();
+    }
   });
 });
