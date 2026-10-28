@@ -130,6 +130,8 @@ export class TokenManager {
   private static readonly AUTO_SELECT_THROTTLE_MS = 3_000;
   private lastAccountSwitchTime = 0;
   private static readonly MIN_ROTATION_INTERVAL_MS = 30_000;
+  private lastHysteresisLogTime = 0;
+  private lastHysteresisLogKey = "";
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -708,9 +710,14 @@ export class TokenManager {
       !forceSwitch
     ) {
       if (bestScore - activeScore <= hysteresisDelta) {
-        this.log(
-          `[AutoRotate (Hysteresis)] Retaining active account ${this.activeEmail} (${activeInfo.percent}%, score: ${activeScore}). Best candidate ${bestAcc.email} score ${bestScore} delta ${bestScore - activeScore} <= ${hysteresisDelta}`,
-        );
+        const logKey = `${this.activeEmail}->${bestAcc.email}:${activeInfo.percent}%`;
+        if (logKey !== this.lastHysteresisLogKey || now - this.lastHysteresisLogTime > 60_000) {
+          this.lastHysteresisLogKey = logKey;
+          this.lastHysteresisLogTime = now;
+          this.log(
+            `[AutoRotate (Hysteresis)] Retaining active account ${this.activeEmail} (${activeInfo.percent}%, score: ${activeScore}). Best candidate ${bestAcc.email} score ${bestScore} delta ${bestScore - activeScore} <= ${hysteresisDelta}`,
+          );
+        }
         return null;
       }
     } else if (!isRateLimitFailover && !isActiveExhausted && !forceSwitch && bestScore <= activeScore) {

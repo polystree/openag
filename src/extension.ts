@@ -235,65 +235,34 @@ export function activate(context: vscode.ExtensionContext): ExtensionExports {
     if (!tokenManager?.isExtensionEnabled()) return;
     try {
       const ideTokens = await USSBridge.getOAuthToken();
-      let ideEmail = await USSBridge.getIdeEmail();
-      if (!ideEmail) {
-        const lsClient = new LanguageServerClient(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath);
-        const lsStatus = await lsClient.getUserStatus();
-        if (lsStatus?.email) ideEmail = lsStatus.email;
-      }
-      if (ideEmail && tokenManager) {
-        if (!tokenManager.getActiveEmail()) {
-          const matching = tokenManager.getAccounts().find((a) => a.email.toLowerCase() === ideEmail!.toLowerCase());
-          if (matching) {
-            log(`[IDE Sync] Initializing active account from IDE: ${ideEmail}`);
-            await tokenManager.selectAccount(matching.email);
-          }
+      if (!ideTokens?.accessToken) return;
+
+      const accounts = tokenManager.getAccounts();
+      // Only bootstrap from IDE if pool is completely empty. Never clobber existing pool accounts from USS!
+      if (accounts.length === 0) {
+        const verifiedEmail = await USSBridge.getEmailFromToken(ideTokens.accessToken);
+        if (verifiedEmail) {
+          log(`[IDE Sync] Bootstrapping initial account from IDE: ${verifiedEmail}`);
+          await tokenManager.addOrUpdateAccount({
+            email: verifiedEmail,
+            accessToken: ideTokens.accessToken,
+            refreshToken: ideTokens.refreshToken || "",
+            tokenExpiresAt: ideTokens.expiryDateSeconds || Math.floor(Date.now() / 1000) + 3600,
+            tier: "pro",
+            status: "active",
+            sortOrder: 0,
+          });
+          void quotaMonitor?.pollAllAccounts();
         }
-        if (ideTokens?.accessToken) {
-          const accounts = tokenManager.getAccounts();
-          const existing = accounts.find((a) => a.email.toLowerCase() === ideEmail.toLowerCase());
-          if (!existing) {
-            log(`[IDE Sync] Auto-importing new account from IDE: ${ideEmail}`);
-            await tokenManager.addOrUpdateAccount({
-              email: ideEmail,
-              accessToken: ideTokens.accessToken,
-              refreshToken: ideTokens.refreshToken || "",
-              tokenExpiresAt: ideTokens.expiryDateSeconds || Math.floor(Date.now() / 1000) + 3600,
-              tier: "pro",
-              status: "active",
-              sortOrder: accounts.length,
-            });
-            void quotaMonitor?.pollAllAccounts();
-          } else if (ideTokens.accessToken !== existing.accessToken || (ideTokens.refreshToken && ideTokens.refreshToken !== existing.refreshToken)) {
-            log(`[IDE Sync] Updating credentials from IDE for: ${ideEmail}`);
-            await tokenManager.addOrUpdateAccount({
-              ...existing,
-              accessToken: ideTokens.accessToken,
-              refreshToken: ideTokens.refreshToken || existing.refreshToken || "",
-              tokenExpiresAt: ideTokens.expiryDateSeconds || Math.floor(Date.now() / 1000) + 3600,
-              status: "active",
-              health: "healthy",
-              healthError: undefined,
-            });
-            void quotaMonitor?.fetchAccountQuota(existing);
-          }
+      } else if (!tokenManager.getActiveEmail() && accounts.length > 0) {
+        const first = accounts[0];
+        if (first) {
+          await tokenManager.selectAccount(first.email);
         }
       }
     } catch (e: unknown) {
       log(`IDE auth sync error: ${e instanceof Error ? e.message : String(e)}`);
     }
-  };
-
-  let lastSyncIdeAuthTime = 0;
-  const SYNC_THROTTLE_MS = 60000;
-
-  const throttledSyncIdeAuth = async (force = false): Promise<void> => {
-    const now = Date.now();
-    if (!force && now - lastSyncIdeAuthTime < SYNC_THROTTLE_MS) {
-      return;
-    }
-    lastSyncIdeAuthTime = now;
-    await syncIdeAuth();
   };
 
   const updateWorkspacePaths = () => {
@@ -318,14 +287,9 @@ export function activate(context: vscode.ExtensionContext): ExtensionExports {
     }
   })();
 
-  // Periodic background drift fallback heartbeat (5 minutes) instead of aggressive 10s polling
-  const syncTimer = setInterval(() => void throttledSyncIdeAuth(), 300000);
-
   context.subscriptions.push(
-    { dispose: () => clearInterval(syncTimer) },
     vscode.window.onDidChangeWindowState((s) => {
       if (s.focused) {
-        void throttledSyncIdeAuth();
         usageTracker?.refresh();
       }
     }),
@@ -368,7 +332,6 @@ export function activate(context: vscode.ExtensionContext): ExtensionExports {
       }
     }),
     vscode.commands.registerCommand("openag.refreshQuotas", async () => {
-      await throttledSyncIdeAuth(true);
       await quotaMonitor?.pollAllAccounts();
       vscode.window.showInformationMessage("OpenAG: Quotas refreshed");
     }),
@@ -430,7 +393,6 @@ export function activate(context: vscode.ExtensionContext): ExtensionExports {
         if (!passphrase) return;
 
         const count = await tokenManager.importAccounts(rawJson, passphrase);
-        await throttledSyncIdeAuth(true);
         void quotaMonitor?.pollAllAccounts();
         void vscode.window.showInformationMessage(`OpenAG: Successfully imported ${count} accounts.`);
         webviewProvider?.refresh();

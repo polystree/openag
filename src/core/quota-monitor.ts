@@ -5,8 +5,8 @@ import { getCodeAssistBody, getUserAgent } from "./sqlite-utils.js";
 import type { TokenManager } from "./token-manager.js";
 import type { UsageTracker } from "./usage-tracker.js";
 
-export const PRIMARY_ENDPOINT = "https://daily-cloudcode-pa.googleapis.com";
-export const FALLBACK_ENDPOINT = "https://cloudcode-pa.googleapis.com";
+export const PRIMARY_ENDPOINT = "https://cloudcode-pa.googleapis.com";
+export const FALLBACK_ENDPOINT = "https://daily-cloudcode-pa.googleapis.com";
 const FIVE_HOURS = 5 * 60 * 60 * 1000;
 const KEY_QUOTA_CACHE = "openag.quota_cache.v1";
 
