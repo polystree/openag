@@ -1,5 +1,6 @@
 import type * as vscode from "vscode";
 import type { Account, AccountQuota, AccountTier, FamilyQuota, ModelQuota, QuotaLimitInfo } from "../types.js";
+import { LanguageServerClient } from "./language-server-client.js";
 import { getCodeAssistBody, getUserAgent } from "./sqlite-utils.js";
 import type { TokenManager } from "./token-manager.js";
 import type { UsageTracker } from "./usage-tracker.js";
@@ -90,6 +91,7 @@ export class QuotaMonitor {
   private readonly quotas = new Map<string, AccountQuota>();
   private readonly tierCheckedAt = new Map<string, number>();
   private static readonly TIER_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+  private readonly lsClient: LanguageServerClient;
   private pollTimer: NodeJS.Timeout | null = null;
   private cleanupTimer: NodeJS.Timeout | null = null;
   private modelsDiscovered = false;
@@ -103,7 +105,12 @@ export class QuotaMonitor {
     private readonly onQuotaUpdate?: (quota: AccountQuota) => void,
     private readonly usageTracker?: UsageTracker,
     private readonly context?: vscode.ExtensionContext,
+    workspacePath?: string,
   ) {
+    this.lsClient = new LanguageServerClient(
+      workspacePath,
+      (msg) => this.log(msg),
+    );
     if (this.context) {
       const cached = this.context.globalState.get<Record<string, AccountQuota>>(KEY_QUOTA_CACHE, {});
       if (cached) {
@@ -117,8 +124,16 @@ export class QuotaMonitor {
   }
 
   public initialize(): void {
+    this.tokenManager.onAccountChange(() => {
+      this.invalidateLanguageServer();
+      void this.pollAllAccounts();
+    });
     this.startPolling();
     void this.pollAllAccounts();
+  }
+
+  public invalidateLanguageServer(): void {
+    this.lsClient.invalidate();
   }
 
   public cleanupExpiredQuotas(): void {
@@ -214,20 +229,38 @@ export class QuotaMonitor {
         }
       }
 
-      const res = await this.postCloudCode(
-        "/v1internal:retrieveUserQuotaSummary",
-        accessToken,
-        JSON.stringify(account.projectId ? { project: account.projectId } : {}),
-      );
-
-      if (!res.ok) {
-        const errText = await res.text();
-        this.log(`Quota fetch failed for ${account.email} HTTP ${res.status}: ${errText}`);
-        return null;
+      let data: QuotaResponse | null = null;
+      try {
+        const lsStatus = await this.lsClient.getUserStatus();
+        if (lsStatus?.email && lsStatus.email.toLowerCase() === account.email.toLowerCase()) {
+          const lsQuota = await this.lsClient.retrieveUserQuotaSummary();
+          if (lsQuota && (lsQuota.groups || lsQuota.buckets)) {
+            data = lsQuota as QuotaResponse;
+            if (lsStatus.tier && lsStatus.tier.includes("pro")) {
+              tier = "pro";
+            }
+          }
+        }
+      } catch (lsErr) {
+        this.log(`Language server quota check skipped for ${account.email}: ${lsErr instanceof Error ? lsErr.message : String(lsErr)}`);
       }
 
-      // SAFETY: Google Cloud internal quota endpoint response
-      const data = (await res.json()) as QuotaResponse;
+      if (!data) {
+        const res = await this.postCloudCode(
+          "/v1internal:retrieveUserQuotaSummary",
+          accessToken,
+          JSON.stringify(account.projectId ? { project: account.projectId } : {}),
+        );
+
+        if (!res.ok) {
+          const errText = await res.text();
+          this.log(`Quota fetch failed for ${account.email} HTTP ${res.status}: ${errText}`);
+          return null;
+        }
+
+        // SAFETY: Google Cloud internal quota endpoint response
+        data = (await res.json()) as QuotaResponse;
+      }
       let families: FamilyQuota[] = [];
       const models: ModelQuota[] = [];
 

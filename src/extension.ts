@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { HookServer } from "./core/hook-server.js";
+import { LanguageServerClient } from "./core/language-server-client.js";
 import { LogManager } from "./core/log-manager.js";
 import { OAuthFlow } from "./core/oauth-flow.js";
 import { QuotaMonitor } from "./core/quota-monitor.js";
@@ -132,6 +133,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionExports {
     },
     usageTracker,
     context,
+    vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
   );
 
   webviewProvider = new WebviewProvider(context, tokenManager, quotaMonitor, log, logManager, statsManager, usageTracker);
@@ -193,34 +195,48 @@ export function activate(context: vscode.ExtensionContext): ExtensionExports {
     if (!tokenManager?.isExtensionEnabled()) return;
     try {
       const ideTokens = await USSBridge.getOAuthToken();
-      const ideEmail = await USSBridge.getIdeEmail();
-      if (ideEmail && ideTokens?.accessToken && tokenManager) {
-        const accounts = tokenManager.getAccounts();
-        const existing = accounts.find((a) => a.email.toLowerCase() === ideEmail.toLowerCase());
-        if (!existing) {
-          log(`[IDE Sync] Auto-importing new account from IDE: ${ideEmail}`);
-          await tokenManager.addOrUpdateAccount({
-            email: ideEmail,
-            accessToken: ideTokens.accessToken,
-            refreshToken: ideTokens.refreshToken || "",
-            tokenExpiresAt: ideTokens.expiryDateSeconds || Math.floor(Date.now() / 1000) + 3600,
-            tier: "pro",
-            status: "active",
-            sortOrder: accounts.length,
-          });
-          void quotaMonitor?.pollAllAccounts();
-        } else if (ideTokens.accessToken !== existing.accessToken || (ideTokens.refreshToken && ideTokens.refreshToken !== existing.refreshToken)) {
-          log(`[IDE Sync] Updating credentials from IDE for: ${ideEmail}`);
-          await tokenManager.addOrUpdateAccount({
-            ...existing,
-            accessToken: ideTokens.accessToken,
-            refreshToken: ideTokens.refreshToken || existing.refreshToken || "",
-            tokenExpiresAt: ideTokens.expiryDateSeconds || Math.floor(Date.now() / 1000) + 3600,
-            status: "active",
-            health: "healthy",
-            healthError: undefined,
-          });
-          void quotaMonitor?.fetchAccountQuota(existing);
+      let ideEmail = await USSBridge.getIdeEmail();
+      if (!ideEmail) {
+        const lsClient = new LanguageServerClient(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath);
+        const lsStatus = await lsClient.getUserStatus();
+        if (lsStatus?.email) ideEmail = lsStatus.email;
+      }
+      if (ideEmail && tokenManager) {
+        if (tokenManager.getActiveEmail().toLowerCase() !== ideEmail.toLowerCase()) {
+          const matching = tokenManager.getAccounts().find((a) => a.email.toLowerCase() === ideEmail!.toLowerCase());
+          if (matching) {
+            log(`[IDE Sync] Aligning active account to IDE current account: ${ideEmail}`);
+            await tokenManager.selectAccount(matching.email);
+          }
+        }
+        if (ideTokens?.accessToken) {
+          const accounts = tokenManager.getAccounts();
+          const existing = accounts.find((a) => a.email.toLowerCase() === ideEmail.toLowerCase());
+          if (!existing) {
+            log(`[IDE Sync] Auto-importing new account from IDE: ${ideEmail}`);
+            await tokenManager.addOrUpdateAccount({
+              email: ideEmail,
+              accessToken: ideTokens.accessToken,
+              refreshToken: ideTokens.refreshToken || "",
+              tokenExpiresAt: ideTokens.expiryDateSeconds || Math.floor(Date.now() / 1000) + 3600,
+              tier: "pro",
+              status: "active",
+              sortOrder: accounts.length,
+            });
+            void quotaMonitor?.pollAllAccounts();
+          } else if (ideTokens.accessToken !== existing.accessToken || (ideTokens.refreshToken && ideTokens.refreshToken !== existing.refreshToken)) {
+            log(`[IDE Sync] Updating credentials from IDE for: ${ideEmail}`);
+            await tokenManager.addOrUpdateAccount({
+              ...existing,
+              accessToken: ideTokens.accessToken,
+              refreshToken: ideTokens.refreshToken || existing.refreshToken || "",
+              tokenExpiresAt: ideTokens.expiryDateSeconds || Math.floor(Date.now() / 1000) + 3600,
+              status: "active",
+              health: "healthy",
+              healthError: undefined,
+            });
+            void quotaMonitor?.fetchAccountQuota(existing);
+          }
         }
       }
     } catch (e: unknown) {
