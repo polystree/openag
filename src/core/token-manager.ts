@@ -20,6 +20,7 @@ import { FALLBACK_ENDPOINT, PRIMARY_ENDPOINT } from "./quota-monitor.js";
 import { getCodeAssistBody, getUserAgent } from "./sqlite-utils.js";
 import type { UsageTracker } from "./usage-tracker.js";
 import { USSBridge } from "./uss-bridge.js";
+import type { LanguageServerClient } from "./language-server-client.js";
 
 const KEY_ACCOUNTS = "openag.accounts.v1";
 const KEY_ACTIVE = "openag.active_account.v1";
@@ -63,12 +64,17 @@ export class TokenManager {
   private lastSyncedToken: string | null = null;
   private lastSyncedEmail: string | null = null;
   private selectAccountLock: Promise<void> = Promise.resolve();
+  private lsClient?: LanguageServerClient;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly log: (msg: string) => void,
     private readonly usageTracker?: UsageTracker,
   ) {}
+
+  public setLanguageServerClient(client: LanguageServerClient): void {
+    this.lsClient = client;
+  }
 
   public async initialize(): Promise<void> {
     this.accounts = this.context.globalState.get<Account[]>(KEY_ACCOUNTS, []);
@@ -607,6 +613,7 @@ export class TokenManager {
       if (!force && this.lastSyncedEmail === active.email && this.lastSyncedToken === token) {
         return;
       }
+      const isAccountSwitch = Boolean(this.lastSyncedEmail && this.lastSyncedEmail.toLowerCase() !== active.email.toLowerCase());
       this.lastSyncedEmail = active.email;
       this.lastSyncedToken = token;
       await USSBridge.setOAuthToken({
@@ -615,7 +622,16 @@ export class TokenManager {
         expiryDateSeconds: active.tokenExpiresAt,
         tokenType: "Bearer",
         isGcpTos: false,
-      });
+      }, active.email);
+
+      if (isAccountSwitch && this.lsClient) {
+        this.log(`[LS] Account changed to ${active.email}, restarting language server to reload credentials...`);
+        void this.lsClient.restartServer().then((ok) => {
+          if (ok) {
+            this.log(`[LS] Language server restarted successfully with account ${active.email}`);
+          }
+        });
+      }
       void (async () => {
         try {
           const override = this.config.endpointOverride?.trim();

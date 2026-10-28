@@ -140,6 +140,10 @@
       {
         "command": "openag.removeAntigravityHook",
         "title": "OpenAG: Remove Antigravity PreInvocation Hook"
+      },
+      {
+        "command": "openag.restartLanguageServer",
+        "title": "OpenAG: Restart Language Server (Apply Credential Changes)"
       }
     ]
   },

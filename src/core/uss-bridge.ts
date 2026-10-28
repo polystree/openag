@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import type { OAuthTokens } from "../types.js";
+import { OSKeyring } from "./os-keyring.js";
 
 export interface ClientCredentials {
   clientId: string;
@@ -81,7 +82,7 @@ export const USSBridge = {
     }
   },
 
-  async setOAuthToken(token: OAuthTokens): Promise<boolean> {
+  async setOAuthToken(token: OAuthTokens, email?: string): Promise<boolean> {
     try {
       const api = getApi();
       const pref = api?.OAuthPreferences;
@@ -93,6 +94,11 @@ export const USSBridge = {
         tokenType: token.tokenType || "Bearer",
         isGcpTos: token.isGcpTos ?? false,
       });
+
+      const resolvedEmail = email || (await this.getEmailFromToken(token.accessToken));
+      if (resolvedEmail) {
+        await OSKeyring.writeCredential(resolvedEmail, token);
+      }
 
       if (api) {
         try { api.sync?.(); } catch { /* ignore */ }

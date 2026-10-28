@@ -96,6 +96,27 @@ export class LanguageServerClient {
     }
   }
 
+  public async restartServer(): Promise<boolean> {
+    const info = await this.detect();
+    if (!info) return false;
+    try {
+      await fetch(`http://127.0.0.1:${info.port}/exa.language_server_pb.LanguageServerService/Restart`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-codeium-csrf-token": info.csrfToken,
+          "Connect-Protocol-Version": "1",
+        },
+        body: JSON.stringify({}),
+      }).catch(() => {});
+      this.invalidate();
+      return true;
+    } catch {
+      this.invalidate();
+      return false;
+    }
+  }
+
   private async discoverProcess(): Promise<LanguageServerInfo | null> {
     try {
       let output = "";

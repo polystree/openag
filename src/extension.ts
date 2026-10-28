@@ -120,6 +120,9 @@ export function activate(context: vscode.ExtensionContext): ExtensionExports {
   statsManager = new StatsManager(context, log);
   usageTracker = new UsageTracker(statsManager);
   tokenManager = new TokenManager(context, log, usageTracker);
+  const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  const lsClient = new LanguageServerClient(workspacePath, log);
+  tokenManager.setLanguageServerClient(lsClient);
   statusBar = new StatusBarHUD(context, statsManager, tokenManager);
 
   quotaMonitor = new QuotaMonitor(
@@ -133,7 +136,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionExports {
     },
     usageTracker,
     context,
-    vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
+    workspacePath,
   );
 
   webviewProvider = new WebviewProvider(context, tokenManager, quotaMonitor, log, logManager, statsManager, usageTracker);
@@ -317,6 +320,14 @@ export function activate(context: vscode.ExtensionContext): ExtensionExports {
       await syncIdeAuth();
       await quotaMonitor?.pollAllAccounts();
       vscode.window.showInformationMessage("OpenAG: Quotas refreshed");
+    }),
+    vscode.commands.registerCommand("openag.restartLanguageServer", async () => {
+      const ok = await lsClient.restartServer();
+      if (ok) {
+        vscode.window.showInformationMessage("OpenAG: Language server restarted successfully.");
+      } else {
+        vscode.window.showWarningMessage("OpenAG: Language server restart command sent or process not detected.");
+      }
     }),
     vscode.commands.registerCommand("openag.exportPool", async () => {
       try {
