@@ -204,6 +204,7 @@ export interface AutoSelectOptions {
   isRateLimitFailover?: boolean;
   forceSwitch?: boolean;
   hysteresisDelta?: number;
+  ignoreThrottle?: boolean;
 }
 
 declare global {

@@ -203,10 +203,15 @@ export function importPool(serializedJson: string, passphrase: string): Promise<
   const asyncPromise = (async (): Promise<DecryptedPoolData> => {
     if (cachedSyncResult) return cachedSyncResult;
     const key = await deriveKey(passphrase, salt);
+    if (cachedSyncResult) return cachedSyncResult;
     const result = decryptEnvelopePayload(envelope, key);
     cachedSyncResult = result;
     return result;
   })();
+
+  // Attach a no-op rejection handler to suppress unhandledRejection events if the caller accesses
+  // properties synchronously via getters or fails to await the returned promise.
+  asyncPromise.catch(() => {});
 
   Object.defineProperties(asyncPromise, {
     accounts: {

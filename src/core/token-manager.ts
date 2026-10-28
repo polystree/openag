@@ -25,7 +25,7 @@ import { getCodeAssistBody, getUserAgent } from "./sqlite-utils.js";
 import type { StatsManager } from "./stats-manager.js";
 import type { UsageTracker } from "./usage-tracker.js";
 import { USSBridge } from "./uss-bridge.js";
-import type { LanguageServerClient } from "./language-server-client.js";
+import { LanguageServerClient } from "./language-server-client.js";
 
 const KEY_ACCOUNTS = "openag.accounts.v1";
 const KEY_ACTIVE = "openag.active_account.v1";
@@ -123,6 +123,10 @@ export class TokenManager {
   private lsClient?: LanguageServerClient;
   private statsManager?: StatsManager;
   private quotaMonitor?: QuotaMonitor;
+  private lastAutoSelectTime = 0;
+  private static readonly AUTO_SELECT_THROTTLE_MS = 3_000;
+  private lastAccountSwitchTime = 0;
+  private static readonly MIN_ROTATION_INTERVAL_MS = 30_000;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -390,6 +394,7 @@ export class TokenManager {
       await this.syncActiveTokenToUss();
     } else if (newStatus === "active" && !this.activeEmail) {
       this.activeEmail = target.email;
+      this.lastAccountSwitchTime = Date.now();
       await this.context.globalState.update(KEY_ACTIVE, this.activeEmail);
       await this.syncActiveTokenToUss();
     }
@@ -420,6 +425,7 @@ export class TokenManager {
       const target = this.accounts.find((a) => a.email.toLowerCase() === email.toLowerCase());
       if (!target || target.status === "disabled") return null;
       this.activeEmail = target.email;
+      this.lastAccountSwitchTime = Date.now();
       await this.context.globalState.update(KEY_ACTIVE, this.activeEmail);
       await this.persist();
       await this.syncActiveTokenToUss();
@@ -549,6 +555,15 @@ export class TokenManager {
     const isRateLimitFailover =
       resolvedReason === "rate_limit_failover" || resolvedOptions?.isRateLimitFailover === true;
     const forceSwitch = Boolean(resolvedOptions?.forceSwitch);
+    const isTest = LanguageServerClient.isTestEnvironment();
+
+    if (!isTest && !isRateLimitFailover && !forceSwitch && !resolvedOptions?.ignoreThrottle) {
+      if (now - this.lastAutoSelectTime < TokenManager.AUTO_SELECT_THROTTLE_MS) {
+        return null;
+      }
+    }
+    this.lastAutoSelectTime = now;
+
     const activeMatchesAffinity = activeAcc ? matchesModelAffinity(activeAcc, famKey) : true;
     const activeIsFreeWhenPaidAvailable = activeAcc?.tier === "free" && hasUsablePaid;
 
@@ -697,6 +712,12 @@ export class TokenManager {
       }
     } else if (!isRateLimitFailover && !isActiveExhausted && !forceSwitch && bestScore <= activeScore) {
       return null;
+    }
+
+    if (!isTest && !isRateLimitFailover && !forceSwitch && !isActiveExhausted && !resolvedOptions?.ignoreThrottle) {
+      if (now - this.lastAccountSwitchTime < TokenManager.MIN_ROTATION_INTERVAL_MS) {
+        return null;
+      }
     }
 
     this.log(
@@ -915,7 +936,7 @@ export class TokenManager {
   }
 
   public async importAccounts(serializedJson: string, passphrase: string): Promise<number> {
-    const data = importPool(serializedJson, passphrase);
+    const data = await importPool(serializedJson, passphrase);
     let imported = 0;
     for (const acc of data.accounts) {
       const sec = data.secrets[acc.email.toLowerCase()];

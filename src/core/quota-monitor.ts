@@ -97,6 +97,7 @@ export class QuotaMonitor {
   private readonly lsClient: LanguageServerClient;
   private pollTimer: NodeJS.Timeout | null = null;
   private cleanupTimer: NodeJS.Timeout | null = null;
+  private isPollingAll = false;
   private modelsDiscovered = false;
   private static readonly IDLE_THRESHOLD_MS = 5 * 60 * 1000;
   private static readonly IDLE_POLL_INTERVAL_MS = 5 * 60 * 1000;
@@ -628,16 +629,28 @@ export class QuotaMonitor {
   }
 
   public async pollAllAccounts(): Promise<void> {
-    const accounts = this.tokenManager.getAccounts().filter((acc) => acc.status !== "disabled");
-    accounts.sort((a, b) => {
-      const aPriority = this.priorityQueue.has(a.email.toLowerCase()) ? 1 : 0;
-      const bPriority = this.priorityQueue.has(b.email.toLowerCase()) ? 1 : 0;
-      return bPriority - aPriority;
-    });
-    await runWithConcurrency(accounts, 4, (acc) => this.fetchAccountQuota(acc, true));
-    if (this.tokenManager.isExtensionEnabled() && this.tokenManager.isRotationEnabled()) {
-      const model = this.usageTracker?.getActiveModel();
-      void this.tokenManager.autoSelectHighestQuota(this.getAllQuotas(), "poll all accounts completion", model);
+    if (this.isPollingAll) return;
+    this.isPollingAll = true;
+    try {
+      const accounts = this.tokenManager.getAccounts().filter((acc) => acc.status !== "disabled");
+      accounts.sort((a, b) => {
+        const aPriority = this.priorityQueue.has(a.email.toLowerCase()) ? 1 : 0;
+        const bPriority = this.priorityQueue.has(b.email.toLowerCase()) ? 1 : 0;
+        return bPriority - aPriority;
+      });
+      const concurrency = Math.min(4, Math.max(2, Math.floor(accounts.length / 3)));
+      await runWithConcurrency(accounts, concurrency, async (acc) => {
+        await this.fetchAccountQuota(acc, true);
+        if (accounts.length > 6) {
+          await new Promise((r) => setTimeout(r, 100));
+        }
+      });
+      if (this.tokenManager.isExtensionEnabled() && this.tokenManager.isRotationEnabled()) {
+        const model = this.usageTracker?.getActiveModel();
+        void this.tokenManager.autoSelectHighestQuota(this.getAllQuotas(), "poll all accounts completion", model);
+      }
+    } finally {
+      this.isPollingAll = false;
     }
   }
 
@@ -667,7 +680,8 @@ export class QuotaMonitor {
 
   private getActivePollIntervalMs(): number {
     const cfgSec = this.tokenManager.getConfig().pollIntervalSeconds;
-    return typeof cfgSec === "number" && cfgSec >= 15 ? cfgSec * 1000 : 60000;
+    const baseMs = typeof cfgSec === "number" && cfgSec >= 15 ? cfgSec * 1000 : 60000;
+    return Math.max(baseMs, 60000);
   }
 
   private scheduleNextPoll(): void {

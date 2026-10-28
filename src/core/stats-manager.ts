@@ -4,7 +4,7 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 import type { BurnRateInfo, ConversationStats, DayTokenStats, HourlyTokenStats, MonthTokenStats, RequestStats, TokenBucket, TokenStatsRegistry, WeekTokenStats } from "../types.js";
 import { aggregateBlockTokens, readGenMetadata } from "./gen-metadata-reader.js";
-import { CONV_DIR, getBrainDirs, resolveConversationDb, withSqliteDb } from "./sqlite-utils.js";
+import { CONV_DIR, getBrainDirs, resolveConversationDb, resolveTranscriptPath, withSqliteDb } from "./sqlite-utils.js";
 
 const STATS_KEY = "openag_token_stats_v8";
 const SEVEN_DAYS = 7 * 24 * 60 * 60 * 1000;
@@ -31,6 +31,60 @@ function parseTitleFromBuffer(buf: Buffer): string | null {
   return null;
 }
 
+export function extractSubagentTitle(convId: string): string | null {
+  const cleanId = convId.endsWith(".db") ? convId.slice(0, -3) : convId;
+  for (const brainDir of getBrainDirs()) {
+    try {
+      if (!fs.existsSync(brainDir)) continue;
+      const parentDirs = fs.readdirSync(brainDir, { withFileTypes: true });
+      for (const p of parentDirs) {
+        if (!p.isDirectory()) continue;
+        const subagentFile = path.join(brainDir, p.name, ".system_generated", "subagents", `${cleanId}.json`);
+        if (fs.existsSync(subagentFile)) {
+          const raw = fs.readFileSync(subagentFile, "utf8");
+          const parsed = JSON.parse(raw) as { subagentDescriptor?: { role?: string; typeName?: string } };
+          if (parsed.subagentDescriptor?.role) {
+            return `Subagent: ${parsed.subagentDescriptor.role}`;
+          }
+          if (parsed.subagentDescriptor?.typeName) {
+            return `Subagent: ${parsed.subagentDescriptor.typeName}`;
+          }
+        }
+      }
+    } catch { /* ignore filesystem errors */ }
+  }
+
+  const transcriptPath = resolveTranscriptPath(cleanId);
+  if (transcriptPath && fs.existsSync(transcriptPath)) {
+    try {
+      const fd = fs.openSync(transcriptPath, "r");
+      const buf = Buffer.alloc(4096);
+      const bytesRead = fs.readSync(fd, buf, 0, 4096, 0);
+      fs.closeSync(fd);
+      if (bytesRead > 0) {
+        const chunk = buf.toString("utf8", 0, bytesRead);
+        const firstLine = chunk.split("\n")[0];
+        if (firstLine) {
+          const obj = JSON.parse(firstLine) as { content?: string };
+          const content = obj.content || "";
+          const roleMatch = content.match(/Role\s*:\s*"?([^"\r\n]+)"?/i) ||
+            content.match(/You are [^(]+\(([^)]+)\)/i) ||
+            content.match(/role\s*:\s*"?([^"\r\n]+)"?/i);
+          if (roleMatch?.[1]) {
+            return `Subagent: ${roleMatch[1].trim()}`;
+          }
+          const promptMatch = content.match(/content=([^\r\n]+)/i);
+          if (promptMatch?.[1] && promptMatch[1].length > 5) {
+            return `Subagent: ${promptMatch[1].trim().slice(0, 50)}`;
+          }
+        }
+      }
+    } catch { /* ignore */ }
+  }
+
+  return null;
+}
+
 export function extractAntigravityTitle(convId: string, fallbackPrompt = ""): string {
   const dbPath = resolveConversationDb(convId) || path.join(CONV_DIR, `${convId}.db`);
   if (fs.existsSync(dbPath)) {
@@ -46,6 +100,9 @@ export function extractAntigravityTitle(convId: string, fallbackPrompt = ""): st
 
     if (foundTitle) return foundTitle;
   }
+
+  const subagentTitle = extractSubagentTitle(convId);
+  if (subagentTitle) return subagentTitle;
 
   if (fallbackPrompt) {
     const clean = fallbackPrompt.replace(/[\r\n]+/g, " ").trim();
@@ -166,6 +223,11 @@ export function parseTranscriptLines(
         const reqMatch = firstObj.content.match(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/i);
         if (reqMatch?.[1]) {
           initialPrompt = reqMatch[1].trim().replace(/[\r\n]+/g, " ").slice(0, 75);
+        } else if (firstObj.content.includes("<SYSTEM_MESSAGE>")) {
+          const msgMatch = firstObj.content.match(/content=([^\r\n]+)/i);
+          if (msgMatch?.[1] && msgMatch[1].trim().length > 3) {
+            initialPrompt = msgMatch[1].trim().replace(/[\r\n]+/g, " ").slice(0, 75);
+          }
         }
       }
     } catch { /* ignore */ }

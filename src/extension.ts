@@ -34,8 +34,18 @@ export function maskEmailsInText(text: string): string {
   return text.replace(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g, (m) => maskEmail(m));
 }
 
+function isEvaluationRetentionLog(msg: string): boolean {
+  return (
+    msg.includes("Retaining active account") ||
+    msg.includes("delta <=") ||
+    msg.includes("exhaustion headroom") ||
+    msg.includes("imminent reset in") ||
+    msg.includes("Language server quota check skipped")
+  );
+}
+
 function getLogCategory(msg: string): "ROTATION" | "QUOTA" | "USS" | "AUTH" | "SYSTEM" {
-  if (msg.includes("AutoRotate") || msg.includes("ROTATION")) return "ROTATION";
+  if (msg.includes("Switching to") || msg.includes("switched to") || msg.includes("Cycling to") || msg.includes("ROTATION")) return "ROTATION";
   if (msg.includes("Quota") || msg.includes("QUOTA")) return "QUOTA";
   if (msg.includes("IDE Sync") || msg.includes("USS")) return "USS";
   if (msg.includes("AUTH") || msg.includes("Authorized") || msg.includes("Login") || msg.includes("token")) return "AUTH";
@@ -44,8 +54,16 @@ function getLogCategory(msg: string): "ROTATION" | "QUOTA" | "USS" | "AUTH" | "S
 
 function getLogLevel(msg: string): "info" | "warn" | "error" | "rotate" {
   const lower = msg.toLowerCase();
-  if (lower.includes("error") || lower.includes("fail")) return "error";
-  if (msg.includes("AutoRotate")) return "rotate";
+  if (lower.includes("error") || lower.includes("fail") || lower.includes("429")) return "error";
+  if (lower.includes("warn") || lower.includes("exhausted")) return "warn";
+  if (
+    msg.includes("[AutoRotate] Switching to") ||
+    msg.includes("Active account switched to") ||
+    msg.includes("[AutoRotate (Round-Robin)]") ||
+    msg.includes("[AutoRotate (Round-Robin Imminent)]")
+  ) {
+    return "rotate";
+  }
   return "info";
 }
 
@@ -53,7 +71,9 @@ const log = (msg: string): void => {
   const hideEmail = tokenManager?.getConfig()?.hideEmail ?? vscode.workspace?.getConfiguration?.("openag")?.get<boolean>("hideEmail") ?? false;
   const safeMsg = hideEmail ? maskEmailsInText(msg) : msg;
   outputChannel?.appendLine(`[${new Date().toISOString().slice(11, 23)}] ${safeMsg}`);
-  logManager?.addLog(getLogLevel(msg), getLogCategory(msg), safeMsg);
+  if (!isEvaluationRetentionLog(msg)) {
+    logManager?.addLog(getLogLevel(msg), getLogCategory(msg), safeMsg);
+  }
 };
 
 export interface ExtensionExports {

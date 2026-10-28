@@ -12,7 +12,7 @@ import {
   type Account,
   type OAuthTokens,
 } from "../../src/types.js";
-import { createTestAccount } from "../helpers/test-utils.js";
+import { createTestAccount, setupTestTokenManager } from "../helpers/test-utils.js";
 
 describe("F9: Async Cryptography & Performance", () => {
   const sampleAccounts: Account[] = [
@@ -169,6 +169,81 @@ describe("F9: Async Cryptography & Performance", () => {
       expect(dec.accounts.length).toBe(50);
       expect(Object.keys(dec.secrets).length).toBe(50);
       expect(dec.accounts[49]?.email).toBe("account-49@gmail.com");
+    });
+  });
+
+  describe("Tier 3: Error Recovery & Unhandled Rejection Suppression", () => {
+    it("T3.1: importPool with invalid passphrase and synchronous property access suppresses unhandled rejection", async () => {
+      const encryptedJson = await exportPool(sampleAccounts, sampleSecrets, testPassphrase);
+      let unhandled = false;
+      const handler = () => {
+        unhandled = true;
+      };
+      process.on("unhandledRejection", handler);
+
+      try {
+        const pool = importPool(encryptedJson, "WrongPassphrase123!");
+        expect(() => pool.accounts).toThrow();
+        try {
+          const _dummy = pool.accounts;
+        } catch (err: any) {
+          expect(err).toBeInstanceOf(AuthError);
+          expect(err.code).toBe(OpenAGErrorCode.AUTH_INVALID_PASSPHRASE);
+        }
+
+        // Wait 400ms for threadpool to finish deriveKey and verify no unhandled rejection event
+        await new Promise((r) => setTimeout(r, 400));
+        expect(unhandled).toBe(false);
+      } finally {
+        process.off("unhandledRejection", handler);
+      }
+    });
+
+    it("T3.2: unawaited importPool call with invalid passphrase does not emit unhandled rejection", async () => {
+      const encryptedJson = await exportPool(sampleAccounts, sampleSecrets, testPassphrase);
+      let unhandled = false;
+      const handler = () => {
+        unhandled = true;
+      };
+      process.on("unhandledRejection", handler);
+
+      try {
+        importPool(encryptedJson, "WrongPassphrase123!");
+
+        // Wait 400ms for threadpool to finish deriveKey
+        await new Promise((r) => setTimeout(r, 400));
+        expect(unhandled).toBe(false);
+      } finally {
+        process.off("unhandledRejection", handler);
+      }
+    });
+
+    it("T3.3: TokenManager.importAccounts with invalid passphrase rejects cleanly without unhandled rejection", async () => {
+      const encryptedJson = await exportPool(sampleAccounts, sampleSecrets, testPassphrase);
+      const { tokenManager } = await setupTestTokenManager();
+      let unhandled = false;
+      const handler = () => {
+        unhandled = true;
+      };
+      process.on("unhandledRejection", handler);
+
+      try {
+        let threw = false;
+        try {
+          await tokenManager.importAccounts(encryptedJson, "WrongPassphrase123!");
+        } catch (err: any) {
+          threw = true;
+          expect(err).toBeInstanceOf(AuthError);
+          expect(err.code).toBe(OpenAGErrorCode.AUTH_INVALID_PASSPHRASE);
+        }
+        expect(threw).toBe(true);
+
+        // Wait 400ms for any background operations to settle
+        await new Promise((r) => setTimeout(r, 400));
+        expect(unhandled).toBe(false);
+      } finally {
+        process.off("unhandledRejection", handler);
+      }
     });
   });
 });
