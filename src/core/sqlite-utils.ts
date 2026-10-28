@@ -101,6 +101,13 @@ export function resolveConversationDb(convId: string): string | null {
   for (const dir of getConvDirs()) {
     const candidate = path.join(dir, `${cleanId}.db`);
     if (fs.existsSync(candidate)) return candidate;
+    if (cleanId.length >= 8 && fs.existsSync(dir)) {
+      try {
+        const files = fs.readdirSync(dir);
+        const matched = files.find((f) => f === `${cleanId}.db` || f.startsWith(`${cleanId}-`));
+        if (matched) return path.join(dir, matched);
+      } catch { /* ignore */ }
+    }
   }
   return null;
 }
@@ -109,6 +116,16 @@ export function resolveTranscriptPath(convId: string): string | null {
   for (const dir of getBrainDirs()) {
     const candidate = path.join(dir, convId, ".system_generated", "logs", "transcript.jsonl");
     if (fs.existsSync(candidate)) return candidate;
+    if (convId.length >= 8 && fs.existsSync(dir)) {
+      try {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        const matched = entries.find((e) => e.isDirectory() && (e.name === convId || e.name.startsWith(`${convId}-`)));
+        if (matched) {
+          const matchCandidate = path.join(dir, matched.name, ".system_generated", "logs", "transcript.jsonl");
+          if (fs.existsSync(matchCandidate)) return matchCandidate;
+        }
+      } catch { /* ignore */ }
+    }
   }
   return null;
 }

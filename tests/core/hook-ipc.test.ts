@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -16,13 +16,23 @@ import type { AccountQuota } from "../../src/types.js";
 describe("F5 & F6: PreInvocation Hook Script & IPC", () => {
   let hookServer: HookServer | null = null;
   let testPort = 0;
+  let testIpcFile = "";
   const accA = createTestAccount({ email: "acc-a@gmail.com", tier: "pro" });
   const accB = createTestAccount({ email: "acc-b@gmail.com", tier: "pro" });
+
+  beforeEach(() => {
+    testIpcFile = path.join(os.tmpdir(), `openag-test-ipc-${Date.now()}-${Math.random().toString(36).slice(2, 7)}.json`);
+    process.env.OPENAG_IPC_PATH = testIpcFile;
+  });
 
   afterEach(() => {
     if (hookServer) {
       hookServer.dispose();
       hookServer = null;
+    }
+    delete process.env.OPENAG_IPC_PATH;
+    if (testIpcFile && fs.existsSync(testIpcFile)) {
+      try { fs.unlinkSync(testIpcFile); } catch { /* ignore */ }
     }
   });
 
@@ -128,7 +138,7 @@ describe("F5 & F6: PreInvocation Hook Script & IPC", () => {
     });
 
     it("T1.5: Hook auto-registration preserves existing PreToolUse and PostToolUse in hooks.json", async () => {
-      const configDir = path.join(os.homedir(), ".gemini", "config");
+      const configDir = path.join(os.tmpdir(), `openag-test-config-${Date.now()}`);
       const hooksFile = path.join(configDir, "hooks.json");
       fs.mkdirSync(configDir, { recursive: true });
 
@@ -139,7 +149,7 @@ describe("F5 & F6: PreInvocation Hook Script & IPC", () => {
       };
       fs.writeFileSync(hooksFile, JSON.stringify(existingConfig, null, 2), "utf8");
 
-      HookServer.registerGlobalHook("c:\\mock\\extension");
+      HookServer.registerGlobalHook("c:\\mock\\extension", configDir);
 
       const updated = JSON.parse(fs.readFileSync(hooksFile, "utf8"));
       expect(updated.PreToolUse).toBeDefined();
@@ -148,6 +158,7 @@ describe("F5 & F6: PreInvocation Hook Script & IPC", () => {
       expect(updated.PostToolUse.length).toBe(1);
       expect(updated.PreInvocation).toBeDefined();
       expect(updated.PreInvocation.length).toBeGreaterThanOrEqual(1);
+      fs.rmSync(configDir, { recursive: true, force: true });
     });
   });
 
@@ -266,10 +277,12 @@ describe("F5 & F6: PreInvocation Hook Script & IPC", () => {
     });
 
     it("T2.7: Hook auto-registration creates valid config when hooks.json does not exist", () => {
+      const configDir = path.join(os.tmpdir(), `openag-test-fresh-${Date.now()}`);
       const fakeExtPath = "c:\\mock\\fresh-extension";
       expect(() => {
-        HookServer.registerGlobalHook(fakeExtPath);
+        HookServer.registerGlobalHook(fakeExtPath, configDir);
       }).not.toThrow();
+      fs.rmSync(configDir, { recursive: true, force: true });
     });
   });
 });

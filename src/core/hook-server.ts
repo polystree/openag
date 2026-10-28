@@ -8,11 +8,31 @@ import type { TokenManager } from "./token-manager.js";
 
 export const DEFAULT_HOOK_PORT = 27182;
 
+export function isPidAlive(pid: number): boolean {
+  if (!pid || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err: unknown) {
+    const code = (err as { code?: string }).code;
+    return code === "EPERM";
+  }
+}
+
+export interface IpcSessionEntry {
+  pid: number;
+  port: number;
+  authToken: string;
+  workspacePath?: string;
+  updatedAt: number;
+}
+
 export interface IpcDiscoveryData {
   port: number;
   authToken: string;
   pid: number;
   updatedAt: number;
+  sessions?: IpcSessionEntry[];
 }
 
 export interface HookInvocationPayload {
@@ -32,6 +52,7 @@ export class HookServer {
     private readonly tokenManager: TokenManager,
     private readonly quotaMonitor: QuotaMonitor,
     private readonly log: (msg: string) => void,
+    private readonly workspacePath?: string,
   ) {}
 
   public start(port = DEFAULT_HOOK_PORT): Promise<number> {
@@ -138,7 +159,7 @@ export class HookServer {
   }
 
   public static getIpcFilePath(): string {
-    return path.join(os.homedir(), ".gemini", "openag", "ipc.json");
+    return process.env.OPENAG_IPC_PATH || path.join(os.homedir(), ".gemini", "openag", "ipc.json");
   }
 
   private writeIpcDiscovery(port: number, authToken: string): void {
@@ -149,14 +170,45 @@ export class HookServer {
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
       }
+
+      let sessions: IpcSessionEntry[] = [];
+      if (fs.existsSync(ipcFile)) {
+        try {
+          const raw = fs.readFileSync(ipcFile, "utf8");
+          const existing = JSON.parse(raw) as IpcDiscoveryData;
+          if (Array.isArray(existing.sessions)) {
+            sessions = existing.sessions.filter(
+              (s) => s.pid !== process.pid && isPidAlive(s.pid) && Date.now() - (s.updatedAt || 0) < 86400000,
+            );
+          } else if (existing.pid && existing.pid !== process.pid && isPidAlive(existing.pid)) {
+            sessions.push({
+              pid: existing.pid,
+              port: existing.port,
+              authToken: existing.authToken,
+              updatedAt: existing.updatedAt || Date.now(),
+            });
+          }
+        } catch { /* ignore corrupted file */ }
+      }
+
+      const myEntry: IpcSessionEntry = {
+        pid: process.pid,
+        port,
+        authToken,
+        workspacePath: this.workspacePath,
+        updatedAt: Date.now(),
+      };
+      sessions.unshift(myEntry);
+
       const descriptor: IpcDiscoveryData = {
         port,
         authToken,
         pid: process.pid,
         updatedAt: Date.now(),
+        sessions,
       };
       fs.writeFileSync(ipcFile, JSON.stringify(descriptor, null, 2), "utf8");
-      this.log(`[HookServer] Wrote IPC discovery descriptor to ${ipcFile}`);
+      this.log(`[HookServer] Wrote IPC discovery descriptor to ${ipcFile} (active sessions: ${sessions.length})`);
     } catch (err: unknown) {
       this.log(`[HookServer] Failed to write IPC discovery descriptor: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -165,17 +217,32 @@ export class HookServer {
   private removeIpcDiscovery(): void {
     try {
       const ipcFile = this.ipcFilePath || HookServer.getIpcFilePath();
-      if (fs.existsSync(ipcFile)) {
-        try {
-          const content = fs.readFileSync(ipcFile, "utf8");
-          const data = JSON.parse(content) as Partial<IpcDiscoveryData>;
-          if (data.pid === process.pid) {
-            fs.unlinkSync(ipcFile);
-            this.log(`[HookServer] Removed IPC discovery descriptor at ${ipcFile}`);
-          }
-        } catch {
-          fs.unlinkSync(ipcFile);
+      if (!fs.existsSync(ipcFile)) return;
+      let sessions: IpcSessionEntry[] = [];
+      try {
+        const raw = fs.readFileSync(ipcFile, "utf8");
+        const existing = JSON.parse(raw) as IpcDiscoveryData;
+        if (Array.isArray(existing.sessions)) {
+          sessions = existing.sessions.filter((s) => s.pid !== process.pid && isPidAlive(s.pid));
         }
+      } catch {
+        sessions = [];
+      }
+
+      if (sessions.length === 0) {
+        fs.unlinkSync(ipcFile);
+        this.log(`[HookServer] Removed IPC discovery descriptor at ${ipcFile}`);
+      } else {
+        const primary = sessions[0]!;
+        const updatedDescriptor: IpcDiscoveryData = {
+          port: primary.port,
+          authToken: primary.authToken,
+          pid: primary.pid,
+          updatedAt: primary.updatedAt,
+          sessions,
+        };
+        fs.writeFileSync(ipcFile, JSON.stringify(updatedDescriptor, null, 2), "utf8");
+        this.log(`[HookServer] De-registered session PID ${process.pid}; active sessions remaining: ${sessions.length}`);
       }
     } catch (err: unknown) {
       this.log(`[HookServer] Error cleaning up IPC file: ${err instanceof Error ? err.message : String(err)}`);

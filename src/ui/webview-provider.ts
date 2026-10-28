@@ -114,7 +114,7 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
     };
   }
 
-  private postState(): void {
+  private postState(forceRender = false): void {
     if (!this.view) return;
     if (!this.view.visible) {
       this.isDirty = true;
@@ -125,6 +125,7 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
       void this.view.webview.postMessage({
         type: "state",
         data: this.getCurrentStateData(),
+        forceRender,
       });
     } catch (e: unknown) {
       this.log(`postState error: ${e instanceof Error ? e.message : String(e)}`);
@@ -142,13 +143,16 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
             await vscode.commands.executeCommand("openag.addAccount");
             break;
           case "refreshQuotas":
-            this.logManager.addLog("info", "QUOTA", "Refreshing account pool quotas...");
-            await this.quotaMonitor.pollAllAccounts(true);
-            {
+            try {
+              this.logManager.addLog("info", "QUOTA", "Refreshing account pool quotas...");
+              await this.quotaMonitor.pollAllAccounts(true);
               const poolCount = this.tokenManager.getAccounts().filter((a) => a.status !== "disabled").length;
               this.logManager.addLog("info", "QUOTA", `Quota refresh complete (${poolCount} active accounts updated).`);
+            } catch (e: unknown) {
+              this.logManager.addLog("error", "QUOTA", `Quota refresh failed: ${e instanceof Error ? e.message : String(e)}`);
+            } finally {
+              this.postState(true);
             }
-            this.postState();
             break;
           case "toggleAccount":
             if (message.payload) {
@@ -177,10 +181,15 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
             break;
           case "refreshAccount":
             if (message.payload) {
-              this.logManager.addLog("info", "QUOTA", `Refreshing quota for ${message.payload}...`);
-              await this.quotaMonitor.refreshAccountQuota(message.payload);
-              this.logManager.addLog("info", "QUOTA", `Quota refreshed for ${message.payload}.`);
-              this.postState();
+              try {
+                this.logManager.addLog("info", "QUOTA", `Refreshing quota for ${message.payload}...`);
+                await this.quotaMonitor.refreshAccountQuota(message.payload);
+                this.logManager.addLog("info", "QUOTA", `Quota refreshed for ${message.payload}.`);
+              } catch (e: unknown) {
+                this.logManager.addLog("error", "QUOTA", `Account quota refresh failed: ${e instanceof Error ? e.message : String(e)}`);
+              } finally {
+                this.postState(true);
+              }
             }
             break;
           case "removeAccount":
@@ -605,6 +614,7 @@ document.addEventListener("click", function(e) {
     var svgEl = target.querySelector("svg");
     if (svgEl) svgEl.classList.add("spin");
     target.disabled = true;
+    setTimeout(function() { scheduleRender(); }, 10000);
     send("refreshAccount", target.getAttribute("data-email"));
   } else if (action === "removeAccount") {
     send("removeAccount", target.getAttribute("data-email"));
@@ -617,6 +627,7 @@ document.addEventListener("click", function(e) {
     if (rTxt) rTxt.textContent = "Refreshing...";
     var rSvg = rBtn.querySelector("svg");
     if (rSvg) rSvg.classList.add("spin");
+    setTimeout(function() { scheduleRender(); }, 12000);
     send("refreshQuotas");
   } else if (action === "clearLogs") {
     send("clearLogs");
@@ -672,6 +683,10 @@ function scheduleRender() {
 window.addEventListener("message", function(e) {
   if (e.data && e.data.type === "state" && e.data.data) {
     state = e.data.data;
+    if (e.data.forceRender) {
+      lastAccountsFp = "";
+      lastStatsWidgetFp = "";
+    }
     scheduleRender();
   }
 });
@@ -753,6 +768,15 @@ function render() {
       if (rTxt) rTxt.textContent = "Refresh";
       var rSvg = rBtn.querySelector("svg");
       if (rSvg) rSvg.classList.remove("spin");
+    }
+
+    var allSpinning = document.querySelectorAll(".spin");
+    for (var spi = 0; spi < allSpinning.length; spi++) {
+      allSpinning[spi].classList.remove("spin");
+    }
+    var allDisabled = document.querySelectorAll("button[disabled]");
+    for (var dsi = 0; dsi < allDisabled.length; dsi++) {
+      allDisabled[dsi].disabled = false;
     }
 
     if (currentView === "home") {

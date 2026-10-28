@@ -131,11 +131,9 @@ export const USSBridge = {
       }
 
       for (const cmd of [
-        "antigravity.refreshAuth",
         "antigravity.refreshStatus",
         "antigravity.syncState",
         "antigravity.getUserStatus",
-        "jetski.refresh",
       ]) {
         try { void vscode.commands.executeCommand(cmd); } catch (e: unknown) { debugLog(`[USSBridge] Failed to execute ${cmd}: ${e instanceof Error ? e.message : String(e)}`); }
       }

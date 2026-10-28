@@ -4,11 +4,20 @@ import * as path from "node:path";
 
 export const DEFAULT_HOOK_PORT = 27182;
 
+interface IpcSessionItem {
+  pid: number;
+  port: number;
+  authToken: string;
+  workspacePath?: string;
+  updatedAt: number;
+}
+
 interface IpcDiscovery {
   port?: number;
   authToken?: string;
   pid?: number;
   updatedAt?: number;
+  sessions?: IpcSessionItem[];
 }
 
 interface PreInvocationResponse {
@@ -21,16 +30,25 @@ interface PreInvocationResponse {
   error?: string;
 }
 
-export function readIpcDiscovery(): { port: number; authToken: string } {
+export function readIpcDiscovery(workspacePath?: string): { port: number; authToken: string } {
   let port = process.env.OPENAG_HOOK_PORT ? parseInt(process.env.OPENAG_HOOK_PORT, 10) : 0;
   let authToken = process.env.OPENAG_HOOK_AUTH_TOKEN || "";
 
   if (!port || !authToken) {
     try {
-      const ipcPath = path.join(os.homedir(), ".gemini", "openag", "ipc.json");
+      const ipcPath = process.env.OPENAG_IPC_PATH || path.join(os.homedir(), ".gemini", "openag", "ipc.json");
       if (fs.existsSync(ipcPath)) {
         const content = fs.readFileSync(ipcPath, "utf-8");
         const data = JSON.parse(content) as IpcDiscovery;
+        if (workspacePath && Array.isArray(data.sessions) && data.sessions.length > 0) {
+          const normWp = workspacePath.toLowerCase().replace(/\\/g, "/");
+          const matched = data.sessions.find(
+            (s) => s.workspacePath && normWp.includes(s.workspacePath.toLowerCase().replace(/\\/g, "/")),
+          );
+          if (matched && matched.port) {
+            return { port: matched.port, authToken: matched.authToken || "" };
+          }
+        }
         if (!port && typeof data.port === "number" && data.port > 0) {
           port = data.port;
         }
@@ -88,7 +106,15 @@ export async function runHook(): Promise<void> {
     rawInput = await readStdinWithTimeout(15);
   } catch { /* ignore empty stdin */ }
 
-  const { port, authToken } = readIpcDiscovery();
+  let wp: string | undefined;
+  if (rawInput.trim()) {
+    try {
+      const payload = JSON.parse(rawInput.trim()) as { workspacePaths?: string[] };
+      wp = payload.workspacePaths?.[0];
+    } catch { /* ignore */ }
+  }
+
+  const { port, authToken } = readIpcDiscovery(wp);
 
   try {
     const headers: Record<string, string> = {

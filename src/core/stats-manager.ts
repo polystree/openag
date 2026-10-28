@@ -31,23 +31,35 @@ function parseTitleFromBuffer(buf: Buffer): string | null {
   return null;
 }
 
+const subagentTitleCache = new Map<string, string>();
+
 export function extractSubagentTitle(convId: string): string | null {
   const cleanId = convId.endsWith(".db") ? convId.slice(0, -3) : convId;
+  const cached = subagentTitleCache.get(cleanId);
+  if (cached) return cached;
+
   for (const brainDir of getBrainDirs()) {
     try {
       if (!fs.existsSync(brainDir)) continue;
       const parentDirs = fs.readdirSync(brainDir, { withFileTypes: true });
       for (const p of parentDirs) {
         if (!p.isDirectory()) continue;
-        const subagentFile = path.join(brainDir, p.name, ".system_generated", "subagents", `${cleanId}.json`);
-        if (fs.existsSync(subagentFile)) {
-          const raw = fs.readFileSync(subagentFile, "utf8");
-          const parsed = JSON.parse(raw) as { subagentDescriptor?: { role?: string; typeName?: string } };
-          if (parsed.subagentDescriptor?.role) {
-            return `Subagent: ${parsed.subagentDescriptor.role}`;
-          }
-          if (parsed.subagentDescriptor?.typeName) {
-            return `Subagent: ${parsed.subagentDescriptor.typeName}`;
+        const subagentsDir = path.join(brainDir, p.name, ".system_generated", "subagents");
+        if (fs.existsSync(subagentsDir)) {
+          const files = fs.readdirSync(subagentsDir);
+          const match = files.find((f) => f === `${cleanId}.json` || f.startsWith(`${cleanId}-`));
+          if (match) {
+            const raw = fs.readFileSync(path.join(subagentsDir, match), "utf8");
+            const parsed = JSON.parse(raw) as { subagentDescriptor?: { role?: string; typeName?: string } };
+            const title = parsed.subagentDescriptor?.role
+              ? `Subagent: ${parsed.subagentDescriptor.role}`
+              : parsed.subagentDescriptor?.typeName
+                ? `Subagent: ${parsed.subagentDescriptor.typeName}`
+                : null;
+            if (title) {
+              subagentTitleCache.set(cleanId, title);
+              return title;
+            }
           }
         }
       }
@@ -58,8 +70,8 @@ export function extractSubagentTitle(convId: string): string | null {
   if (transcriptPath && fs.existsSync(transcriptPath)) {
     try {
       const fd = fs.openSync(transcriptPath, "r");
-      const buf = Buffer.alloc(4096);
-      const bytesRead = fs.readSync(fd, buf, 0, 4096, 0);
+      const buf = Buffer.alloc(8192);
+      const bytesRead = fs.readSync(fd, buf, 0, 8192, 0);
       fs.closeSync(fd);
       if (bytesRead > 0) {
         const chunk = buf.toString("utf8", 0, bytesRead);
@@ -67,15 +79,29 @@ export function extractSubagentTitle(convId: string): string | null {
         if (firstLine) {
           const obj = JSON.parse(firstLine) as { content?: string };
           const content = obj.content || "";
-          const roleMatch = content.match(/Role\s*:\s*"?([^"\r\n]+)"?/i) ||
-            content.match(/You are [^(]+\(([^)]+)\)/i) ||
-            content.match(/role\s*:\s*"?([^"\r\n]+)"?/i);
+          const youAreMatch = content.match(/You are ([a-zA-Z0-9_-]+)/i);
+          if (youAreMatch?.[1]) {
+            const roleName = youAreMatch[1]
+              .replace(/^teamwork_/i, "")
+              .replace(/[_-]+/g, " ")
+              .trim()
+              .replace(/\b\w/g, (c) => c.toUpperCase());
+            const title = `Subagent: ${roleName}`;
+            subagentTitleCache.set(cleanId, title);
+            return title;
+          }
+          const roleMatch = content.match(/Role\s*[:=]\s*"?([^"\r\n]+)"?/i) ||
+            content.match(/role\s*[:=]\s*"?([^"\r\n]+)"?/i);
           if (roleMatch?.[1]) {
-            return `Subagent: ${roleMatch[1].trim()}`;
+            const title = `Subagent: ${roleMatch[1].trim()}`;
+            subagentTitleCache.set(cleanId, title);
+            return title;
           }
           const promptMatch = content.match(/content=([^\r\n]+)/i);
           if (promptMatch?.[1] && promptMatch[1].length > 5) {
-            return `Subagent: ${promptMatch[1].trim().slice(0, 50)}`;
+            const title = `Subagent: ${promptMatch[1].trim().slice(0, 50)}`;
+            subagentTitleCache.set(cleanId, title);
+            return title;
           }
         }
       }
@@ -256,9 +282,19 @@ export function parseTranscriptLines(
         if (reqMatch?.[1]) {
           initialPrompt = reqMatch[1].trim().replace(/[\r\n]+/g, " ").slice(0, 75);
         } else if (firstObj.content.includes("<SYSTEM_MESSAGE>")) {
-          const msgMatch = firstObj.content.match(/content=([^\r\n]+)/i);
-          if (msgMatch?.[1] && msgMatch[1].trim().length > 3) {
-            initialPrompt = msgMatch[1].trim().replace(/[\r\n]+/g, " ").slice(0, 75);
+          const youAreMatch = firstObj.content.match(/You are ([a-zA-Z0-9_-]+)/i);
+          if (youAreMatch?.[1]) {
+            const roleName = youAreMatch[1]
+              .replace(/^teamwork_/i, "")
+              .replace(/[_-]+/g, " ")
+              .trim()
+              .replace(/\b\w/g, (c) => c.toUpperCase());
+            initialPrompt = `Subagent: ${roleName}`;
+          } else {
+            const msgMatch = firstObj.content.match(/content=([^\r\n]+)/i);
+            if (msgMatch?.[1] && msgMatch[1].trim().length > 3) {
+              initialPrompt = msgMatch[1].trim().replace(/[\r\n]+/g, " ").slice(0, 75);
+            }
           }
         }
       }
@@ -881,7 +917,34 @@ export class StatsManager {
   }
 
   public getRequestsList(limit = 100): RequestStats[] {
-    return (this.registry.requests || [])
+    const reqs = this.registry.requests || [];
+    let changed = false;
+
+    for (const r of reqs) {
+      if (!r.promptPreview || /^[0-9a-f]{8}$/i.test(r.promptPreview.trim())) {
+        const raw = (r.promptPreview || "").trim();
+        let healed: string | null = null;
+        if (raw && /^[0-9a-f]{8}$/i.test(raw)) {
+          healed = extractAntigravityTitle(raw);
+          if (!healed || /^[0-9a-f]{8}$/i.test(healed)) {
+            const matchingConv = Object.entries(this.registry.conversations || {}).find(([cid]) => cid.toLowerCase().startsWith(raw.toLowerCase()));
+            if (matchingConv?.[1]?.title && !/^[0-9a-f]{8}$/i.test(matchingConv[1].title)) {
+              healed = matchingConv[1].title;
+            }
+          }
+        }
+        if (healed && healed !== raw && !/^[0-9a-f]{8}$/i.test(healed)) {
+          r.promptPreview = healed;
+          changed = true;
+        }
+      }
+    }
+
+    if (changed) {
+      this.persist();
+    }
+
+    return reqs
       .slice()
       .sort((a, b) => b.timestamp - a.timestamp)
       .slice(0, limit);

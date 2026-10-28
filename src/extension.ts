@@ -176,7 +176,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionExports {
 
   webviewProvider = new WebviewProvider(context, tokenManager, quotaMonitor, log, logManager, statsManager, usageTracker);
 
-  hookServer = new HookServer(tokenManager, quotaMonitor, log);
+  hookServer = new HookServer(tokenManager, quotaMonitor, log, workspacePath);
   void hookServer.start();
 
   context.subscriptions.push(
