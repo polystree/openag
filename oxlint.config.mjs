@@ -10,6 +10,7 @@ export default {
     "esbuild.js",
     ".agents/**",
     ".gemini/**",
+    "scratch/**",
   ],
   rules: {
     "no-unused-vars": "error",

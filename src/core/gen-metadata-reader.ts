@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { CONV_DIR, withSqliteDb } from "./sqlite-utils.js";
+import { CONV_DIR, resolveConversationDb, withSqliteDb } from "./sqlite-utils.js";
 
 export interface GenTurnMetrics {
   idx: number;
@@ -164,7 +164,7 @@ function parseTurnFromBlob(buf: Buffer): GenTurnMetrics | null {
 interface GenRow { idx: number; data?: Uint8Array | Buffer }
 
 function queryGenRows(conversationId: string, sinceIdx?: number): GenRow[] {
-  const dbPath = path.join(CONV_DIR, `${conversationId}.db`);
+  const dbPath = resolveConversationDb(conversationId) || path.join(CONV_DIR, `${conversationId}.db`);
   if (!fs.existsSync(dbPath)) return [];
 
   const rows = withSqliteDb(dbPath, (db) => {

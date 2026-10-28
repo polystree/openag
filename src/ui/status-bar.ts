@@ -122,7 +122,7 @@ export class StatusBarHUD {
     const tierBadge = this.currentTier && this.currentTier !== "unknown" ? this.currentTier.toUpperCase() : "PRO";
     const icon = this.isRotating ? "$(sync~spin)" : "$(sparkle)";
     const families = this.currentQuota?.families || [];
-    const quotaSummary = families.map((f) => `${f.limit5h?.percent ?? f.percent}%`).join(" | ");
+    const quotaSummary = families.map((f) => `${f.percent}%`).join(" | ");
     const activeModel = (this.currentContext?.model || "").toLowerCase();
     const activeFam =
       activeModel.includes("claude") ||
@@ -137,9 +137,9 @@ export class StatusBarHUD {
           : null;
     const targetFamily = activeFam ? families.find((f) => f.key === activeFam) : null;
     const effectivePct = targetFamily
-      ? ((targetFamily.limitWeekly?.percent ?? 100) <= 0 ? 0 : (targetFamily.limit5h?.percent ?? targetFamily.percent ?? 100))
+      ? targetFamily.percent
       : families.length > 0
-        ? Math.min(...families.map((f) => ((f.limitWeekly?.percent ?? 100) <= 0 ? 0 : (f.limit5h?.percent ?? f.percent ?? 100))))
+        ? Math.min(...families.map((f) => f.percent))
         : 100;
     const ctxPct = this.currentContext?.percent ?? 0;
     const ctxStr = this.currentContext?.limit ? ` [${fmtTokens(this.currentContext.current)}/${fmtTokens(this.currentContext.limit)}]` : "";
@@ -163,11 +163,11 @@ export class StatusBarHUD {
       md.appendMarkdown("---\n\n");
       for (const fam of families) {
         const p5h = fam.limit5h?.percent ?? fam.percent;
-        const reset5h = fmtTime(fam.limit5h?.resetTime ?? fam.resetTime);
+        const reset5h = p5h < 100 ? fmtTime(fam.limit5h?.resetTime ?? fam.resetTime) : "";
         md.appendMarkdown(`**${fam.label} (5h)**: \`${makeBar(p5h)}\` **${p5h}%**${reset5h ? ` (resets ${reset5h})` : ""}\n\n`);
         if (fam.limitWeekly) {
           const pWk = fam.limitWeekly.percent;
-          const resetWk = fmtTime(fam.limitWeekly.resetTime);
+          const resetWk = pWk < 100 ? fmtTime(fam.limitWeekly.resetTime) : "";
           md.appendMarkdown(`**${fam.label} (7d)**: \`${makeBar(pWk)}\` **${pWk}%**${resetWk ? ` (resets ${resetWk})` : ""}\n\n`);
         }
       }

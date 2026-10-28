@@ -38,12 +38,12 @@ export function extractUriFromText(text: string): string | null {
 }
 
 export class UsageTracker {
-  private activeModel = "Gemini 3.7 Flash High";
+  private activeModel = "Gemini 3.8 Flash (High)";
   private readonly modelContextLimits = new Map<string, number>();
   private currentUsage: ContextUsage = {
     current: 0,
     limit: 1048576,
-    model: "Gemini 3.7 Flash High",
+    model: "Gemini 3.8 Flash (High)",
     percent: 0,
   };
 
@@ -75,7 +75,7 @@ export class UsageTracker {
     this.refresh();
     this.pollInterval = setInterval(() => this.refresh(), 10000);
     if (this.statsManager) {
-      void this.statsManager.backfillFromTranscripts(BRAIN_DIR);
+      void this.statsManager.backfillFromTranscripts();
     }
   }
 

@@ -1,7 +1,6 @@
 import * as vscode from "vscode";
 import type { LogManager } from "../core/log-manager.js";
 import type { QuotaMonitor } from "../core/quota-monitor.js";
-import { BRAIN_DIR } from "../core/sqlite-utils.js";
 import type { StatsManager } from "../core/stats-manager.js";
 import type { TokenManager } from "../core/token-manager.js";
 import type { UsageTracker } from "../core/usage-tracker.js";
@@ -47,7 +46,7 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
     this.setWebviewMessageListener(webviewView.webview);
 
     webviewView.onDidChangeVisibility(() => {
-      if (webviewView.visible && (this.isDirty || !this.view)) {
+      if (webviewView.visible && this.isDirty) {
         this.postState();
       }
     });
@@ -195,7 +194,7 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
             break;
           case "recalculateStats":
             if (this.statsManager) {
-              await this.statsManager.resetAndRecalculate(BRAIN_DIR);
+              await this.statsManager.resetAndRecalculate();
               this.usageTracker?.resetProcessedLines();
               this.refresh();
             }
@@ -586,12 +585,14 @@ document.addEventListener("click", function(e) {
   } else if (action === "reauthAccount") {
     send("reauthAccount", target.getAttribute("data-email"));
   } else if (action === "refreshAccount") {
+    target.textContent = "...";
     send("refreshAccount", target.getAttribute("data-email"));
   } else if (action === "removeAccount") {
     send("removeAccount", target.getAttribute("data-email"));
   } else if (action === "addAccount") {
     send("addAccount");
   } else if (action === "refreshQuotas") {
+    target.textContent = "Refreshing...";
     send("refreshQuotas");
   } else if (action === "clearLogs") {
     send("clearLogs");
@@ -737,7 +738,7 @@ function makeBarHtml(label, pct, resetIso) {
   var p = typeof pct === "number" ? Math.min(100, Math.max(0, pct)) : 100;
   var cls = p < 20 ? "err" : p < 40 ? "warn" : "";
   var resetText = fmtTime(resetIso);
-  var rTag = resetIso ? '<span class="reset-tag ' + (resetText !== "ready" ? "active" : "") + '" data-reset="' + resetIso + '">' + resetText + '</span>' : '';
+  var rTag = (p < 100 && resetIso) ? '<span class="reset-tag ' + (resetText !== "ready" ? "active" : "") + '" data-reset="' + resetIso + '">' + resetText + '</span>' : '';
   var scale = (p / 100).toFixed(3);
   return '<div class="quota-row">' +
     '<div style="display:flex;align-items:center;gap:3px;flex:1;min-width:0;overflow:hidden;">' +
@@ -768,24 +769,6 @@ function renderAccounts() {
   var quotas = (state && state.quotas && typeof state.quotas === "object") ? state.quotas : {};
   var visibleAccs = (!accountsExpanded && accs.length > 3) ? accs.slice(0, 3) : accs;
 
-  var fp = (hideEmail ? "1" : "0") + "|" + (accountsExpanded ? "1" : "0") + "|" + (state.activeEmail || "") + "|" + visibleAccs.length;
-  for (var fi = 0; fi < visibleAccs.length; fi++) {
-    var fa = visibleAccs[fi];
-    var fq = fa.email ? quotas[fa.email.toLowerCase()] : null;
-    fp += "|" + fa.email + ":" + fa.status + ":" + fa.tier + ":" + fa.alias + ":" + fa.affinity + ":" + fa.role + ":" + fa.health;
-    if (fq) {
-      fp += ":" + (fq.lastUpdated || 0) + ":" + (fq.percent || 0);
-      if (Array.isArray(fq.families)) {
-        for (var ff = 0; ff < fq.families.length; ff++) {
-          var fam = fq.families[ff];
-          if (fam) fp += ":" + fam.key + ":" + (fam.limit5h ? fam.limit5h.percent : fam.percent) + ":" + (fam.limitWeekly ? fam.limitWeekly.percent : "");
-        }
-      }
-    }
-  }
-  if (fp === lastAccountsFp) return;
-  lastAccountsFp = fp;
-
   var latestRefresh = 0;
   for (var k in quotas) {
     if (quotas[k] && typeof quotas[k].lastUpdated === "number" && quotas[k].lastUpdated > latestRefresh) {
@@ -796,6 +779,24 @@ function renderAccounts() {
   if (qRefEl) {
     qRefEl.textContent = latestRefresh > 0 ? ("Refreshed: " + fmtDateTime(latestRefresh)) : "";
   }
+
+  var fp = (hideEmail ? "1" : "0") + "|" + (accountsExpanded ? "1" : "0") + "|" + (state.activeEmail || "") + "|" + accs.length;
+  for (var fi = 0; fi < accs.length; fi++) {
+    var fa = accs[fi];
+    var fq = fa.email ? quotas[fa.email.toLowerCase()] : null;
+    fp += "|" + fa.email + ":" + fa.status + ":" + fa.tier + ":" + fa.alias + ":" + fa.affinity + ":" + fa.role + ":" + fa.health;
+    if (fq) {
+      fp += ":" + (fq.lastUpdated || 0);
+      if (Array.isArray(fq.families)) {
+        for (var ff = 0; ff < fq.families.length; ff++) {
+          var fam = fq.families[ff];
+          if (fam) fp += ":" + fam.key + ":" + (fam.limit5h ? fam.limit5h.percent : fam.percent) + ":" + (fam.limitWeekly ? fam.limitWeekly.percent : "");
+        }
+      }
+    }
+  }
+  if (fp === lastAccountsFp) return;
+  lastAccountsFp = fp;
 
   var cardsHtml = visibleAccs.map(function(acc, idx) {
     var email = acc.email || "";

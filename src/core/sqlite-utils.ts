@@ -11,8 +11,45 @@ export const NON_IDE_CONV_DIR = path.join(NON_IDE_ROOT, "conversations");
 export const IDE_BRAIN_DIR = path.join(IDE_ROOT, "brain");
 export const IDE_CONV_DIR = path.join(IDE_ROOT, "conversations");
 
-export const BRAIN_DIR = fs.existsSync(IDE_BRAIN_DIR) ? IDE_BRAIN_DIR : NON_IDE_BRAIN_DIR;
-export const CONV_DIR = fs.existsSync(IDE_CONV_DIR) ? IDE_CONV_DIR : NON_IDE_CONV_DIR;
+export const BRAIN_DIR = fs.existsSync(NON_IDE_BRAIN_DIR) ? NON_IDE_BRAIN_DIR : (fs.existsSync(IDE_BRAIN_DIR) ? IDE_BRAIN_DIR : NON_IDE_BRAIN_DIR);
+export const CONV_DIR = fs.existsSync(NON_IDE_CONV_DIR) ? NON_IDE_CONV_DIR : (fs.existsSync(IDE_CONV_DIR) ? IDE_CONV_DIR : NON_IDE_CONV_DIR);
+
+let cachedIdeVersion: string | null = null;
+
+export function getDetectedIdeVersion(): string {
+  if (cachedIdeVersion) return cachedIdeVersion;
+
+  try {
+    const execDir = path.dirname(process.execPath);
+    const candidates = [
+      path.join(execDir, "resources", "app", "product.json"),
+      path.join(execDir, "..", "Resources", "app", "product.json"),
+      path.join(execDir, "..", "resources", "app", "product.json"),
+      path.join(process.env.LOCALAPPDATA || "", "Programs", "Antigravity IDE", "resources", "app", "product.json"),
+    ];
+
+    for (const c of candidates) {
+      if (c && fs.existsSync(c)) {
+        const prod = JSON.parse(fs.readFileSync(c, "utf-8")) as { ideVersion?: string };
+        if (prod.ideVersion && typeof prod.ideVersion === "string") {
+          cachedIdeVersion = prod.ideVersion;
+          return cachedIdeVersion;
+        }
+      }
+    }
+  } catch { /* ignore detection errors */ }
+
+  cachedIdeVersion = "2.6.0";
+  return cachedIdeVersion;
+}
+
+export function getUserAgent(): string {
+  return `Antigravity/${getDetectedIdeVersion()}`;
+}
+
+export function getCodeAssistBody(): string {
+  return JSON.stringify({ metadata: { ideType: "ANTIGRAVITY", ideVersion: getDetectedIdeVersion() } });
+}
 
 function getWslDirs(): { brain: string[]; conv: string[] } {
   const brain: string[] = [];
@@ -22,14 +59,14 @@ function getWslDirs(): { brain: string[]; conv: string[] } {
       const users = fs.readdirSync("/mnt/c/Users", { withFileTypes: true });
       for (const u of users) {
         if (u.isDirectory() && u.name !== "Public" && u.name !== "Default" && !u.name.startsWith(".")) {
-          const ideB = path.join("/mnt/c/Users", u.name, ".gemini", "antigravity-ide", "brain");
-          const ideC = path.join("/mnt/c/Users", u.name, ".gemini", "antigravity-ide", "conversations");
           const nonIdeB = path.join("/mnt/c/Users", u.name, ".gemini", "antigravity", "brain");
           const nonIdeC = path.join("/mnt/c/Users", u.name, ".gemini", "antigravity", "conversations");
-          if (fs.existsSync(ideB)) brain.push(ideB);
-          if (fs.existsSync(ideC)) conv.push(ideC);
+          const ideB = path.join("/mnt/c/Users", u.name, ".gemini", "antigravity-ide", "brain");
+          const ideC = path.join("/mnt/c/Users", u.name, ".gemini", "antigravity-ide", "conversations");
           if (fs.existsSync(nonIdeB)) brain.push(nonIdeB);
           if (fs.existsSync(nonIdeC)) conv.push(nonIdeC);
+          if (fs.existsSync(ideB)) brain.push(ideB);
+          if (fs.existsSync(ideC)) conv.push(ideC);
         }
       }
     } catch { /* ignore */ }
@@ -39,24 +76,24 @@ function getWslDirs(): { brain: string[]; conv: string[] } {
 
 export function getBrainDirs(): string[] {
   const dirs: string[] = [];
-  if (fs.existsSync(IDE_BRAIN_DIR)) dirs.push(IDE_BRAIN_DIR);
   if (fs.existsSync(NON_IDE_BRAIN_DIR)) dirs.push(NON_IDE_BRAIN_DIR);
+  if (fs.existsSync(IDE_BRAIN_DIR)) dirs.push(IDE_BRAIN_DIR);
   const wsl = getWslDirs();
   for (const b of wsl.brain) {
     if (!dirs.includes(b)) dirs.push(b);
   }
-  return dirs.length > 0 ? dirs : [IDE_BRAIN_DIR, NON_IDE_BRAIN_DIR];
+  return dirs.length > 0 ? dirs : [NON_IDE_BRAIN_DIR, IDE_BRAIN_DIR];
 }
 
 export function getConvDirs(): string[] {
   const dirs: string[] = [];
-  if (fs.existsSync(IDE_CONV_DIR)) dirs.push(IDE_CONV_DIR);
   if (fs.existsSync(NON_IDE_CONV_DIR)) dirs.push(NON_IDE_CONV_DIR);
+  if (fs.existsSync(IDE_CONV_DIR)) dirs.push(IDE_CONV_DIR);
   const wsl = getWslDirs();
   for (const c of wsl.conv) {
     if (!dirs.includes(c)) dirs.push(c);
   }
-  return dirs.length > 0 ? dirs : [IDE_CONV_DIR, NON_IDE_CONV_DIR];
+  return dirs.length > 0 ? dirs : [NON_IDE_CONV_DIR, IDE_CONV_DIR];
 }
 
 export function resolveConversationDb(convId: string): string | null {

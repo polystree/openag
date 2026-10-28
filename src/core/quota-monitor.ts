@@ -1,30 +1,61 @@
 import type * as vscode from "vscode";
 import type { Account, AccountQuota, AccountTier, FamilyQuota, ModelQuota, QuotaLimitInfo } from "../types.js";
+import { getCodeAssistBody, getUserAgent } from "./sqlite-utils.js";
 import type { TokenManager } from "./token-manager.js";
 import type { UsageTracker } from "./usage-tracker.js";
 
 export const PRIMARY_ENDPOINT = "https://daily-cloudcode-pa.googleapis.com";
 export const FALLBACK_ENDPOINT = "https://cloudcode-pa.googleapis.com";
-const CODE_ASSIST_BODY = JSON.stringify({ metadata: { ideType: "ANTIGRAVITY", ideVersion: "2.5.5" } });
 const FIVE_HOURS = 5 * 60 * 60 * 1000;
 const KEY_QUOTA_CACHE = "openag.quota_cache.v1";
 
 interface QuotaBucket {
   bucketId?: string;
   displayName?: string;
+  description?: string;
   window?: string;
   resetTime?: string;
   remainingFraction?: number;
+  remaining_fraction?: number;
+  remaining?: {
+    case?: string;
+    value?: number;
+    remainingFraction?: number;
+  };
+  fraction?: number;
 }
 
 interface QuotaGroup {
   displayName?: string;
+  description?: string;
   buckets?: QuotaBucket[];
 }
 
 interface QuotaResponse {
   groups?: QuotaGroup[];
+  buckets?: QuotaBucket[];
+  description?: string;
   models?: Record<string, { quotaInfo?: { remainingFraction?: number; resetTime?: string } }>;
+}
+
+export function extractRemainingFraction(b: QuotaBucket): number {
+  if (typeof b.remainingFraction === "number") return b.remainingFraction;
+  if (typeof (b as { remaining_fraction?: number }).remaining_fraction === "number") {
+    return (b as { remaining_fraction?: number }).remaining_fraction!;
+  }
+  const rem = b.remaining;
+  if (rem) {
+    if (rem.case === "remainingFraction" && typeof rem.value === "number") return rem.value;
+    if (typeof rem.remainingFraction === "number") return rem.remainingFraction;
+    if (typeof rem.value === "number") return rem.value;
+  }
+  if (typeof b.fraction === "number") return b.fraction;
+  return 1;
+}
+
+export function extractResetTime(b: QuotaBucket, pct: number): string | undefined {
+  if (pct >= 100 && !b.description) return undefined;
+  return b.resetTime;
 }
 
 export async function runWithConcurrency<T, R>(
@@ -57,6 +88,8 @@ export async function runWithConcurrency<T, R>(
 
 export class QuotaMonitor {
   private readonly quotas = new Map<string, AccountQuota>();
+  private readonly tierCheckedAt = new Map<string, number>();
+  private static readonly TIER_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
   private pollTimer: NodeJS.Timeout | null = null;
   private cleanupTimer: NodeJS.Timeout | null = null;
   private modelsDiscovered = false;
@@ -170,15 +203,21 @@ export class QuotaMonitor {
     try {
       const accessToken = await this.tokenManager.getValidAccessToken(account);
       await this.discoverModels(accessToken);
-      const tier = await this.detectTier(account, accessToken);
-      if (account.tier !== tier) {
-        await this.tokenManager.updateAccountTier(account.email, tier);
+
+      let tier = account.tier;
+      const lastTierCheck = this.tierCheckedAt.get(account.email.toLowerCase()) ?? 0;
+      if (!tier || tier === "unknown" || Date.now() - lastTierCheck > QuotaMonitor.TIER_CACHE_TTL_MS) {
+        tier = await this.detectTier(account, accessToken);
+        this.tierCheckedAt.set(account.email.toLowerCase(), Date.now());
+        if (account.tier !== tier) {
+          await this.tokenManager.updateAccountTier(account.email, tier);
+        }
       }
 
       const res = await this.postCloudCode(
         "/v1internal:retrieveUserQuotaSummary",
         accessToken,
-        JSON.stringify({ project: account.projectId || "" }),
+        JSON.stringify(account.projectId ? { project: account.projectId } : {}),
       );
 
       if (!res.ok) {
@@ -192,53 +231,81 @@ export class QuotaMonitor {
       let families: FamilyQuota[] = [];
       const models: ModelQuota[] = [];
 
-      if (data.groups && data.groups.length > 0) {
+      const groups = (data.groups && data.groups.length > 0)
+        ? data.groups
+        : (data.buckets && data.buckets.length > 0)
+          ? [{ displayName: "All Models", buckets: data.buckets }]
+          : [];
+
+      if (groups.length > 0) {
         let gemini5h: QuotaLimitInfo | undefined, geminiWeekly: QuotaLimitInfo | undefined;
         let claude5h: QuotaLimitInfo | undefined, claudeWeekly: QuotaLimitInfo | undefined;
 
-        for (const grp of data.groups) {
-          const name = grp.displayName || "";
-          const isClaude = this.categorizeFamily(name) === "claude";
+        for (const grp of groups) {
+          const groupName = grp.displayName || "";
           const buckets = grp.buckets || [];
 
           for (const b of buckets) {
             const bId = (b.bucketId || "").toLowerCase();
-            const pct = Math.round((b.remainingFraction ?? 1) * 100);
-            const is5h = bId.includes("5h") || bId.includes("hourly") || (b.window || "").includes("5h");
-            const isWk = bId.includes("weekly") || (b.window || "").includes("week");
+            const bName = (b.displayName || "").toLowerCase();
+            const isClaude = this.categorizeFamily(groupName, `${bId} ${bName}`) === "claude";
+            const frac = extractRemainingFraction(b);
+            const pct = Math.max(0, Math.min(100, Math.round(frac * 100)));
+            const resetTime = extractResetTime(b, pct);
+
+            const is5h =
+              bId.includes("5h") ||
+              bId.includes("hourly") ||
+              (b.window || "").includes("5h") ||
+              bName.includes("five hour") ||
+              bName.includes("5 hour") ||
+              bName.includes("5h");
+
+            const isWk =
+              bId.includes("weekly") ||
+              (b.window || "").includes("week") ||
+              bName.includes("weekly") ||
+              bName.includes("week");
+
+            const limitInfo: QuotaLimitInfo = { percent: pct, resetTime };
 
             if (isClaude) {
-              if (is5h) claude5h = { percent: pct, resetTime: b.resetTime };
-              else if (isWk) claudeWeekly = { percent: pct, resetTime: b.resetTime };
+              if (is5h) claude5h = limitInfo;
+              else if (isWk) claudeWeekly = limitInfo;
             } else {
-              if (is5h) gemini5h = { percent: pct, resetTime: b.resetTime };
-              else if (isWk) geminiWeekly = { percent: pct, resetTime: b.resetTime };
+              if (is5h) gemini5h = limitInfo;
+              else if (isWk) geminiWeekly = limitInfo;
             }
           }
         }
+
+        const geminiPct = Math.min(gemini5h?.percent ?? 100, geminiWeekly?.percent ?? 100);
+        const claudePct = Math.min(claude5h?.percent ?? 100, claudeWeekly?.percent ?? 100);
 
         families = [
           {
             key: "gemini",
             label: "Gemini",
-            percent: gemini5h?.percent ?? geminiWeekly?.percent ?? 100,
-            resetTime: gemini5h?.resetTime ?? geminiWeekly?.resetTime,
+            percent: geminiPct,
+            resetTime: (gemini5h && gemini5h.percent < 100) ? gemini5h.resetTime : (geminiWeekly && geminiWeekly.percent < 100) ? geminiWeekly.resetTime : undefined,
             limit5h: gemini5h,
             limitWeekly: geminiWeekly,
           },
           {
             key: "claude",
             label: "Claude",
-            percent: claude5h?.percent ?? claudeWeekly?.percent ?? 100,
-            resetTime: claude5h?.resetTime ?? claudeWeekly?.resetTime,
+            percent: claudePct,
+            resetTime: (claude5h && claude5h.percent < 100) ? claude5h.resetTime : (claudeWeekly && claudeWeekly.percent < 100) ? claudeWeekly.resetTime : undefined,
             limit5h: claude5h,
             limitWeekly: claudeWeekly,
           },
         ];
       } else if (data.models && Object.keys(data.models).length > 0) {
         for (const [name, info] of Object.entries(data.models)) {
-          const pct = Math.round((info.quotaInfo?.remainingFraction ?? 1) * 100);
-          models.push({ name, family: this.categorizeFamily(name), percent: pct, resetTime: info.quotaInfo?.resetTime });
+          const frac = info.quotaInfo ? extractRemainingFraction(info.quotaInfo as unknown as QuotaBucket) : 1;
+          const pct = Math.max(0, Math.min(100, Math.round(frac * 100)));
+          const resetTime = pct < 100 ? info.quotaInfo?.resetTime : undefined;
+          models.push({ name, family: this.categorizeFamily(name), percent: pct, resetTime });
         }
         families = this.extractFamilyQuotas(models);
       } else {
@@ -302,7 +369,7 @@ export class QuotaMonitor {
     const headers: Record<string, string> = {
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json",
-      "User-Agent": "Antigravity/2.5.5",
+      "User-Agent": getUserAgent(),
     };
 
     try {
@@ -359,7 +426,7 @@ export class QuotaMonitor {
       const res = await this.postCloudCode(
         "/v1internal:loadCodeAssist",
         accessToken,
-        CODE_ASSIST_BODY,
+        getCodeAssistBody(),
       );
       if (!res.ok) return account.tier || "pro";
       // SAFETY: Code assist subscription tier response payload
@@ -397,15 +464,16 @@ export class QuotaMonitor {
     }
   }
 
-  private categorizeFamily(name: string): "gemini" | "claude" | "other" {
-    const lower = name.toLowerCase();
+  private categorizeFamily(name: string, bucketId = ""): "gemini" | "claude" | "other" {
+    const lower = `${name} ${bucketId}`.toLowerCase();
     if (
       lower.includes("claude") ||
       lower.includes("sonnet") ||
       lower.includes("opus") ||
       lower.includes("haiku") ||
       lower.includes("gpt") ||
-      lower.includes("oss")
+      lower.includes("oss") ||
+      lower.includes("3p")
     ) return "claude";
     if (lower.includes("gemini")) return "gemini";
     return "other";

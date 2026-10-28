@@ -76,15 +76,15 @@ function buildQuickStatusItems(
     const geminiFam = fams.find((f: { key: string }) => f.key === "gemini");
     const claudeFam = fams.find((f: { key: string }) => f.key === "claude");
 
-    const gemini5h = geminiFam?.limit5h?.percent ?? geminiFam?.percent ?? 100;
-    const claude5h = claudeFam?.limit5h?.percent ?? claudeFam?.percent ?? 100;
+    const geminiPct = geminiFam?.percent ?? 100;
+    const claudePct = claudeFam?.percent ?? 100;
 
-    const gReset = resetTimeStr(geminiFam?.limit5h?.resetTime || geminiFam?.resetTime);
-    const cReset = resetTimeStr(claudeFam?.limit5h?.resetTime || claudeFam?.resetTime);
+    const gReset = geminiPct < 100 ? resetTimeStr(geminiFam?.resetTime) : "";
+    const cReset = claudePct < 100 ? resetTimeStr(claudeFam?.resetTime) : "";
 
     const healthStr = acc.health && acc.health !== "healthy" ? ` | ⚠️ ${acc.health.toUpperCase()}` : "";
     const desc = `[${(acc.tier || "pro").toUpperCase()}] ${(acc.affinity || "all").toUpperCase()} · ${(acc.role || "primary").toUpperCase()}${isAct ? " · [ACTIVE]" : ""}${healthStr}`;
-    const detail = `Gemini: ${gemini5h}%${gReset ? ` (resets ${gReset})` : ""} | Claude: ${claude5h}%${cReset ? ` (resets ${cReset})` : ""}`;
+    const detail = `Gemini: ${geminiPct}%${gReset ? ` (resets ${gReset})` : ""} | Claude: ${claudePct}%${cReset ? ` (resets ${cReset})` : ""}`;
 
     return {
       label: `$(account) ${acc.alias ? `${acc.alias} (${acc.email})` : acc.email}`,
@@ -220,6 +220,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionExports {
             health: "healthy",
             healthError: undefined,
           });
+          void quotaMonitor?.fetchAccountQuota(existing);
         }
       }
     } catch (e: unknown) {

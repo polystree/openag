@@ -17,6 +17,7 @@ import {
 import { OAuthFlow } from "./oauth-flow.js";
 import { exportPool, importPool } from "./pool-crypto.js";
 import { FALLBACK_ENDPOINT, PRIMARY_ENDPOINT } from "./quota-monitor.js";
+import { getCodeAssistBody, getUserAgent } from "./sqlite-utils.js";
 import type { UsageTracker } from "./usage-tracker.js";
 import { USSBridge } from "./uss-bridge.js";
 
@@ -347,8 +348,8 @@ export class TokenManager {
         if (fam) {
           const p5h = fam.limit5h?.percent ?? fam.percent ?? 100;
           const pWk = fam.limitWeekly?.percent ?? 100;
-          const pct = pWk <= 0 ? 0 : p5h;
-          const resetStr = fam.limit5h?.resetTime ?? fam.resetTime;
+          const pct = pWk <= 0 ? 0 : Math.min(p5h, pWk);
+          const resetStr = (fam.limit5h && fam.limit5h.percent < 100) ? fam.limit5h.resetTime : fam.limitWeekly?.resetTime;
           const resetTs = resetStr ? Date.parse(resetStr) : Infinity;
           return { percent: pct, resetTs: Number.isNaN(resetTs) ? Infinity : resetTs };
         }
@@ -360,9 +361,9 @@ export class TokenManager {
     for (const f of q.families) {
       const p5h = f.limit5h?.percent ?? f.percent ?? 100;
       const pWk = f.limitWeekly?.percent ?? 100;
-      const pct = pWk <= 0 ? 0 : p5h;
+      const pct = pWk <= 0 ? 0 : Math.min(p5h, pWk);
       minPct = Math.min(minPct, pct);
-      const resetTime = f.limit5h?.resetTime ?? f.resetTime;
+      const resetTime = (f.limit5h && f.limit5h.percent < 100) ? f.limit5h.resetTime : f.limitWeekly?.resetTime;
       if (resetTime) {
         const ts = Date.parse(resetTime);
         if (!Number.isNaN(ts) && ts < minResetTs) minResetTs = ts;
@@ -623,9 +624,9 @@ export class TokenManager {
           const headers = {
             Authorization: `Bearer ${token}`,
             "Content-Type": "application/json",
-            "User-Agent": "Antigravity/2.5.5",
+            "User-Agent": getUserAgent(),
           };
-          const body = JSON.stringify({ metadata: { ideType: "ANTIGRAVITY", ideVersion: "2.5.5" } });
+          const body = getCodeAssistBody();
           let res = await fetch(`${primary}/v1internal:loadCodeAssist`, {
             method: "POST",
             headers,
