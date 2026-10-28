@@ -208,14 +208,17 @@ describe("F8: StatusBar HUD Craft", () => {
       const text = item.text || "";
       const tooltip = (item.tooltip as any).value || "";
 
-      // Ensure no lightning bolt or other emojis
+      // Ensure no lightning bolt, duration, or binding text
       expect(text).not.toContain("⚡");
       expect(tooltip).not.toContain("⚡");
-      expect(text).toContain("(5h)");
-      expect(tooltip).toContain("[Binding]");
+      expect(text).not.toContain("(5h)");
+      expect(text).not.toContain("(7d)");
+      expect(text).not.toContain("[Binding]");
+      expect(tooltip).not.toContain("[Binding]");
+      expect(text).toContain("Gemini: 60%");
     });
 
-    it("T2.7: status bar supports Gemini 4 Argon quota with custom binding window label", async () => {
+    it("T2.7: status bar supports minimal active model quota display", async () => {
       const { tokenManager, context } = await setupTestTokenManager({
         accounts: [accA],
         activeEmail: accA.email,
@@ -227,10 +230,13 @@ describe("F8: StatusBar HUD Craft", () => {
       ]);
 
       statusBar.updateAccount(accA.email, "pro", true, quota);
+      statusBar.updateContext({ current: 0, limit: 1000, model: "gemini-4-argon", percent: 0 });
       (statusBar as any).render();
 
       const item = (statusBar as any).item;
-      expect(item.text).toContain("Gemini 4 Argon: 75% (5h)");
+      expect(item.text).toContain("Argon: 75%");
+      expect(item.text).not.toContain("(5h)");
+      expect(item.text).not.toContain("[Binding]");
     });
 
     it("T2.8: tooltip renders (Not used) label when quota limit has no active timer running", async () => {

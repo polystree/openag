@@ -852,12 +852,11 @@ export class TokenManager {
       }, active.email);
 
       if (isAccountSwitch && this.lsClient) {
-        this.log(`[LS] Account changed to ${active.email}, restarting language server to reload credentials...`);
-        void this.lsClient.restartServer().then((ok) => {
-          if (ok) {
-            this.log(`[LS] Language server restarted successfully with account ${active.email}`);
-          }
-        });
+        // Invalidate cached port/process status so subsequent queries refresh without restarting agy.exe.
+        // Never call restartServer() on account switches because agy.exe hosts all active agent sessions
+        // and terminating it aborts active subagents and causes conversational model disconnections.
+        this.lsClient.invalidate();
+        this.log(`[LS] Account credentials updated in-place for ${active.email} without process restart`);
       }
       void (async () => {
         try {

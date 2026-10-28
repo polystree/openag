@@ -153,13 +153,6 @@ export class StatusBarHUD {
 
     const tierBadge = this.currentTier && this.currentTier !== "unknown" ? this.currentTier.toUpperCase() : "PRO";
     const families = this.currentQuota?.families || [];
-    const quotaSummary = families
-      .map((f) => {
-        const binding = getBindingConstraint(f);
-        const name = f.label || (f.key === "claude" ? "Claude" : f.key === "argon" ? "Argon" : "Gemini");
-        return `${name}: ${binding.percent}% (${binding.windowLabel})`;
-      })
-      .join(" | ");
 
     const activeModel = (this.currentContext?.model || "").toLowerCase();
     const activeFam =
@@ -175,12 +168,21 @@ export class StatusBarHUD {
           : activeModel.includes("gemini")
             ? "gemini"
             : null;
-    const targetFamily = activeFam ? families.find((f) => f.key === activeFam) : null;
+    const targetFamily = activeFam
+      ? families.find((f) => f.key === activeFam)
+      : families.find((f) => f.key === "gemini") || families[0] || null;
+
     const effectivePct = targetFamily
       ? getBindingConstraint(targetFamily).percent
       : families.length > 0
         ? Math.min(...families.map((f) => getBindingConstraint(f).percent))
         : 100;
+
+    const activeLabel = targetFamily
+      ? (targetFamily.key === "claude" ? "Claude" : targetFamily.key === "argon" ? "Argon" : "Gemini")
+      : "Gemini";
+    const quotaSummary = `${activeLabel}: ${effectivePct}%`;
+
     const ctxPct = this.currentContext?.percent ?? 0;
     const ctxStr = this.currentContext?.limit ? ` [${fmtTokens(this.currentContext.current)}/${fmtTokens(this.currentContext.limit)}]` : "";
 
@@ -197,11 +199,11 @@ export class StatusBarHUD {
     if (inCooldown) {
       const cooldownStr = activeCooldownReset ? fmtTime(new Date(activeCooldownReset).toISOString()) : "cooldown";
       const statusTag = isRateLimited ? ` [429 RATE-LIMITED: ${cooldownStr}]` : ` [COOLDOWN: ${cooldownStr}]`;
-      this.item.text = `${this.isRotating ? "$(sync~spin)" : "$(clock)"} ${tierBadge}${statusTag}${quotaSummary ? ` (${quotaSummary})` : ""}${ctxStr}`;
+      this.item.text = `${this.isRotating ? "$(sync~spin)" : "$(clock)"} ${tierBadge}${statusTag} ${quotaSummary}${ctxStr}`;
       this.item.backgroundColor = new vscode.ThemeColor("statusBarItem.errorBackground");
     } else {
       const icon = this.isRotating ? "$(sync~spin)" : "$(sparkle)";
-      this.item.text = `${icon} ${tierBadge}${quotaSummary ? ` (${quotaSummary})` : ""}${ctxStr}`;
+      this.item.text = `${icon} ${tierBadge} ${quotaSummary}${ctxStr}`;
 
       const isError = effectivePct < 20 || ctxPct >= 90;
       const isWarning = effectivePct < 40 || ctxPct >= 80;
@@ -232,18 +234,15 @@ export class StatusBarHUD {
     if (families.length > 0) {
       md.appendMarkdown("---\n\n");
       for (const fam of families) {
-        const binding = getBindingConstraint(fam);
         const p5h = fam.limit5h?.percent ?? fam.percent;
         const reset5h = p5h < 100 ? fmtTime(fam.limit5h?.resetTime ?? fam.resetTime) : "";
-        const tag5h = binding.windowLabel === "5h" ? " [Binding]" : "";
         const timer5hStr = reset5h ? ` (resets ${reset5h})` : " (Not used)";
-        md.appendMarkdown(`**${fam.label} (5h)**: \`${makeBar(p5h)}\` **${p5h}%**${timer5hStr}${tag5h}\n\n`);
+        md.appendMarkdown(`**${fam.label} (5h)**: \`${makeBar(p5h)}\` **${p5h}%**${timer5hStr}\n\n`);
         if (fam.limitWeekly) {
           const pWk = fam.limitWeekly.percent;
           const resetWk = pWk < 100 ? fmtTime(fam.limitWeekly.resetTime) : "";
-          const tagWk = binding.windowLabel === "7d" ? " [Binding]" : "";
           const timerWkStr = resetWk ? ` (resets ${resetWk})` : " (Not used)";
-          md.appendMarkdown(`**${fam.label} (7d)**: \`${makeBar(pWk)}\` **${pWk}%**${timerWkStr}${tagWk}\n\n`);
+          md.appendMarkdown(`**${fam.label} (7d)**: \`${makeBar(pWk)}\` **${pWk}%**${timerWkStr}\n\n`);
         }
       }
     }
