@@ -28,7 +28,7 @@ export function createTestAccount(overrides: Partial<Account> = {}): Account {
 }
 
 export function createFamilyQuota(
-  key: "gemini" | "claude",
+  key: "gemini" | "claude" | "argon",
   percent: number,
   limit5hPercent?: number,
   limit5hResetTime?: string,
@@ -37,7 +37,7 @@ export function createFamilyQuota(
 ): FamilyQuota {
   return {
     key,
-    label: key === "gemini" ? "Gemini Models" : "Claude Models",
+    label: key === "gemini" ? "Gemini Models" : key === "claude" ? "Claude Models" : "Gemini 4 Argon",
     percent,
     resetTime: limit5hResetTime,
     limit5h: {

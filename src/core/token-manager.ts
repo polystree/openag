@@ -31,9 +31,12 @@ const KEY_ACCOUNTS = "openag.accounts.v1";
 const KEY_ACTIVE = "openag.active_account.v1";
 const KEY_CONFIG = "openag.config.v1";
 
-function resolveModelFamily(modelName?: string): "gemini" | "claude" | "other" {
+function resolveModelFamily(modelName?: string): "gemini" | "claude" | "argon" | "other" {
   if (!modelName) return "other";
   const lower = modelName.toLowerCase();
+  if (lower.includes("argon")) {
+    return "argon";
+  }
   if (
     lower.includes("claude") ||
     lower.includes("sonnet") ||
@@ -104,7 +107,7 @@ export function calculateEffectiveQuota(fam: FamilyQuota): EffectiveQuota {
   };
 }
 
-function matchesModelAffinity(account: Account, modelFamily: "gemini" | "claude" | "other"): boolean {
+function matchesModelAffinity(account: Account, modelFamily: "gemini" | "claude" | "argon" | "other"): boolean {
   if (!account.affinity || account.affinity === "all" || modelFamily === "other") return true;
   return account.affinity === modelFamily;
 }
@@ -531,7 +534,7 @@ export class TokenManager {
       quotas = (quotasOrOptions as Record<string, AccountQuota>) || this.quotaMonitor?.getAllQuotas() || {};
     }
 
-    const model = resolvedTargetModel || this.usageTracker?.getActiveModel() || "Gemini 3.7 Flash High";
+    const model = resolvedTargetModel || this.usageTracker?.getActiveModel() || "";
     const famKey = resolveModelFamily(model);
     const now = Date.now();
     const activeEmail = this.activeEmail.toLowerCase();

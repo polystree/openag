@@ -287,6 +287,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); padd
 .progress-fill.err { background: var(--danger); }
 .reset-tag { font-size: 8.5px; font-family: var(--mono); padding: 1px 3px; border-radius: 3px; background: rgba(255,255,255,.06); color: var(--dim); white-space: nowrap; flex-shrink: 0; }
 .reset-tag.active { background: rgba(0,120,212,.2); color: #60a5fa; }
+.reset-tag.not-used { background: transparent; color: var(--dim, #888); opacity: 0.75; }
 
 .switch { position: relative; display: inline-block; width: 26px; height: 14px; cursor: pointer; flex-shrink: 0; }
 .switch input { opacity: 0; width: 0; height: 0; position: absolute; }
@@ -568,7 +569,7 @@ document.addEventListener("click", function(e) {
   } else if (action === "toggleAffinity") {
     var affEmail = target.getAttribute("data-email");
     var curAff = target.getAttribute("data-affinity") || "all";
-    var nextAff = curAff === "all" ? "claude" : curAff === "claude" ? "gemini" : "all";
+    var nextAff = curAff === "all" ? "claude" : curAff === "claude" ? "gemini" : curAff === "gemini" ? "argon" : "all";
     send("updateAccountMeta", { email: affEmail, affinity: nextAff });
   } else if (action === "toggleRole") {
     var roleEmail = target.getAttribute("data-email");
@@ -738,7 +739,10 @@ function makeBarHtml(rowKey, label, pct, resetIso) {
   var p = typeof pct === "number" ? Math.min(100, Math.max(0, pct)) : 100;
   var cls = p < 20 ? "err" : p < 40 ? "warn" : "";
   var resetText = fmtTime(resetIso);
-  var rTag = (p < 100 && resetIso) ? '<span class="reset-tag ' + (resetText !== "ready" ? "active" : "") + '" data-reset="' + esc(resetIso) + '">' + esc(resetText) + '</span>' : '<span class="reset-tag" style="display:none;" data-reset=""></span>';
+  var hasActiveTimer = (p < 100 && resetIso);
+  var rTag = hasActiveTimer
+    ? '<span class="reset-tag ' + (resetText !== "ready" ? "active" : "") + '" data-reset="' + esc(resetIso) + '">' + esc(resetText) + '</span>'
+    : '<span class="reset-tag not-used" data-reset="">Not used</span>';
   var scale = (p / 100).toFixed(3);
   return '<div class="quota-row" data-row-key="' + esc(rowKey) + '">' +
     '<div style="display:flex;align-items:center;gap:3px;flex:1;min-width:0;overflow:hidden;">' +
@@ -779,7 +783,10 @@ function updateQuotaRow(rowEl, label, pct, resetIso) {
       rTag.textContent = resetText;
       rTag.setAttribute("data-reset", resetIso);
     } else {
-      rTag.style.display = "none";
+      rTag.style.display = "";
+      rTag.className = "reset-tag not-used";
+      rTag.textContent = "Not used";
+      rTag.removeAttribute("data-reset");
     }
   }
 
@@ -871,7 +878,12 @@ function patchCard(card, acc, idx, quotas, state, hideEmail) {
   }
 
   var q = (email && quotas[email.toLowerCase()]) || {};
-  var fams = (Array.isArray(q.families) && q.families.length) ? q.families : [{ key: "gemini", label: "Gemini", percent: 100 }, { key: "claude", label: "Claude", percent: 100 }];
+  var fams = (Array.isArray(q.families) && q.families.length)
+    ? q.families.slice()
+    : [{ key: "gemini", label: "Gemini", percent: 100 }, { key: "claude", label: "Claude", percent: 100 }, { key: "argon", label: "Gemini 4 Argon", percent: 100 }];
+  if (!fams.some(function(f) { return f && f.key === "argon"; })) {
+    fams.push({ key: "argon", label: "Gemini 4 Argon", percent: 100 });
+  }
   var qContainer = card.querySelector(".quota-container");
   if (!qContainer) {
     qContainer = document.createElement("div");
@@ -928,7 +940,12 @@ function createCardElement(acc, idx, quotas, state, hideEmail) {
   var isDis = acc.status === "disabled";
   var isAct = !isDis && email && email.toLowerCase() === ((state && state.activeEmail) || "").toLowerCase();
   var q = (email && quotas[email.toLowerCase()]) || {};
-  var fams = (Array.isArray(q.families) && q.families.length) ? q.families : [{ key: "gemini", label: "Gemini", percent: 100 }, { key: "claude", label: "Claude", percent: 100 }];
+  var fams = (Array.isArray(q.families) && q.families.length)
+    ? q.families.slice()
+    : [{ key: "gemini", label: "Gemini", percent: 100 }, { key: "claude", label: "Claude", percent: 100 }, { key: "argon", label: "Gemini 4 Argon", percent: 100 }];
+  if (!fams.some(function(f) { return f && f.key === "argon"; })) {
+    fams.push({ key: "argon", label: "Gemini 4 Argon", percent: 100 });
+  }
 
   var qHtml = '<div class="quota-container" style="display:flex;flex-direction:column;gap:3px;">' + fams.map(function(f, fi) {
     if (!f) return "";

@@ -156,23 +156,25 @@ export class StatusBarHUD {
     const quotaSummary = families
       .map((f) => {
         const binding = getBindingConstraint(f);
-        const name = f.label || (f.key === "claude" ? "Claude" : "Gemini");
-        return `${name}: ${binding.percent}% (⚡${binding.windowLabel})`;
+        const name = f.label || (f.key === "claude" ? "Claude" : f.key === "argon" ? "Argon" : "Gemini");
+        return `${name}: ${binding.percent}% (${binding.windowLabel})`;
       })
       .join(" | ");
 
     const activeModel = (this.currentContext?.model || "").toLowerCase();
     const activeFam =
-      activeModel.includes("claude") ||
-      activeModel.includes("sonnet") ||
-      activeModel.includes("opus") ||
-      activeModel.includes("haiku") ||
-      activeModel.includes("gpt") ||
-      activeModel.includes("oss")
-        ? "claude"
-        : activeModel.includes("gemini")
-          ? "gemini"
-          : null;
+      activeModel.includes("argon")
+        ? "argon"
+        : activeModel.includes("claude") ||
+          activeModel.includes("sonnet") ||
+          activeModel.includes("opus") ||
+          activeModel.includes("haiku") ||
+          activeModel.includes("gpt") ||
+          activeModel.includes("oss")
+          ? "claude"
+          : activeModel.includes("gemini")
+            ? "gemini"
+            : null;
     const targetFamily = activeFam ? families.find((f) => f.key === activeFam) : null;
     const effectivePct = targetFamily
       ? getBindingConstraint(targetFamily).percent
@@ -233,13 +235,15 @@ export class StatusBarHUD {
         const binding = getBindingConstraint(fam);
         const p5h = fam.limit5h?.percent ?? fam.percent;
         const reset5h = p5h < 100 ? fmtTime(fam.limit5h?.resetTime ?? fam.resetTime) : "";
-        const tag5h = binding.windowLabel === "5h" ? " ⚡ Binding" : "";
-        md.appendMarkdown(`**${fam.label} (5h)**: \`${makeBar(p5h)}\` **${p5h}%**${reset5h ? ` (resets ${reset5h})` : ""}${tag5h}\n\n`);
+        const tag5h = binding.windowLabel === "5h" ? " [Binding]" : "";
+        const timer5hStr = reset5h ? ` (resets ${reset5h})` : " (Not used)";
+        md.appendMarkdown(`**${fam.label} (5h)**: \`${makeBar(p5h)}\` **${p5h}%**${timer5hStr}${tag5h}\n\n`);
         if (fam.limitWeekly) {
           const pWk = fam.limitWeekly.percent;
           const resetWk = pWk < 100 ? fmtTime(fam.limitWeekly.resetTime) : "";
-          const tagWk = binding.windowLabel === "7d" ? " ⚡ Binding" : "";
-          md.appendMarkdown(`**${fam.label} (7d)**: \`${makeBar(pWk)}\` **${pWk}%**${resetWk ? ` (resets ${resetWk})` : ""}${tagWk}\n\n`);
+          const tagWk = binding.windowLabel === "7d" ? " [Binding]" : "";
+          const timerWkStr = resetWk ? ` (resets ${resetWk})` : " (Not used)";
+          md.appendMarkdown(`**${fam.label} (7d)**: \`${makeBar(pWk)}\` **${pWk}%**${timerWkStr}${tagWk}\n\n`);
         }
       }
     }

@@ -247,5 +247,23 @@ describe("F2: Dual-Window Binding-Constraint Scoring", () => {
       expect(eff.percent).toBe(-1);
       expect(eff.resetTs).toBe(Infinity);
     });
+
+    it("T2.8: calculates binding constraint specifically for Gemini 4 Argon family when targetModel is argon", async () => {
+      const { tokenManager } = await setupTestTokenManager({
+        accounts: [acc],
+        activeEmail: acc.email,
+      });
+
+      const q = createAccountQuota(acc.email, [
+        createFamilyQuota("gemini", 90, 90, "2026-10-29T10:00:00Z", 95, "2026-11-05T10:00:00Z"),
+        createFamilyQuota("argon", 40, 40, "2026-10-29T08:00:00Z", 80, "2026-11-05T08:00:00Z"),
+      ]);
+      const quotas: Record<string, AccountQuota> = { [acc.email]: q };
+
+      // When target model is gemini-4-argon, effective quota must be bound by argon family (40%) not gemini (90%)
+      const eff = tokenManager.getEffectiveQuota(acc.email, quotas, "gemini-4-argon");
+      expect(eff.percent).toBe(40);
+      expect(eff.bindingWindow).toBe("5h");
+    });
   });
 });

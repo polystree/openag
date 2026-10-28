@@ -188,5 +188,90 @@ describe("F8: StatusBar HUD Craft", () => {
         statusBar?.dispose();
       }).not.toThrow();
     });
+
+    it("T2.6: status bar text and tooltip contain zero emoji characters (e.g. no lightning bolt)", async () => {
+      const { tokenManager, context } = await setupTestTokenManager({
+        accounts: [accA],
+        activeEmail: accA.email,
+      });
+
+      statusBar = new StatusBarHUD(context as any, undefined, tokenManager);
+      const quota = createAccountQuota(accA.email, [
+        createFamilyQuota("gemini", 60, 60, "2026-10-29T10:00:00Z", 90, "2026-11-05T10:00:00Z"),
+        createFamilyQuota("argon", 100, 100, undefined, 100, undefined),
+      ]);
+
+      statusBar.updateAccount(accA.email, "pro", true, quota);
+      (statusBar as any).render();
+
+      const item = (statusBar as any).item;
+      const text = item.text || "";
+      const tooltip = (item.tooltip as any).value || "";
+
+      // Ensure no lightning bolt or other emojis
+      expect(text).not.toContain("⚡");
+      expect(tooltip).not.toContain("⚡");
+      expect(text).toContain("(5h)");
+      expect(tooltip).toContain("[Binding]");
+    });
+
+    it("T2.7: status bar supports Gemini 4 Argon quota with custom binding window label", async () => {
+      const { tokenManager, context } = await setupTestTokenManager({
+        accounts: [accA],
+        activeEmail: accA.email,
+      });
+
+      statusBar = new StatusBarHUD(context as any, undefined, tokenManager);
+      const quota = createAccountQuota(accA.email, [
+        createFamilyQuota("argon", 75, 75, "2026-10-29T10:00:00Z", 95, "2026-11-05T10:00:00Z"),
+      ]);
+
+      statusBar.updateAccount(accA.email, "pro", true, quota);
+      (statusBar as any).render();
+
+      const item = (statusBar as any).item;
+      expect(item.text).toContain("Gemini 4 Argon: 75% (5h)");
+    });
+
+    it("T2.8: tooltip renders (Not used) label when quota limit has no active timer running", async () => {
+      const { tokenManager, context } = await setupTestTokenManager({
+        accounts: [accA],
+        activeEmail: accA.email,
+      });
+
+      statusBar = new StatusBarHUD(context as any, undefined, tokenManager);
+      const quota = createAccountQuota(accA.email, [
+        createFamilyQuota("gemini", 100, 100, undefined, 100, undefined),
+      ]);
+
+      statusBar.updateAccount(accA.email, "pro", true, quota);
+      (statusBar as any).render();
+
+      const item = (statusBar as any).item;
+      const tooltip = (item.tooltip as any).value || "";
+      expect(tooltip).toContain("(Not used)");
+    });
+
+    it("T2.9: fresh session with empty model context does not render hardcoded Gemini 3.7 Flash", async () => {
+      const { tokenManager, context } = await setupTestTokenManager({
+        accounts: [accA],
+        activeEmail: accA.email,
+      });
+
+      statusBar = new StatusBarHUD(context as any, undefined, tokenManager);
+      statusBar.updateAccount(accA.email, "pro", true);
+      statusBar.updateContext({
+        current: 0,
+        limit: 1048576,
+        model: "",
+        percent: 0,
+      });
+      (statusBar as any).render();
+
+      const item = (statusBar as any).item;
+      const tooltip = (item.tooltip as any).value || "";
+      expect(tooltip).not.toContain("Gemini 3.7");
+      expect(tooltip).not.toContain("Gemini 3.8");
+    });
   });
 });

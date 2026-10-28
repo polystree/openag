@@ -294,5 +294,28 @@ describe("F8: Webview Provider & Reactive Accounts Table", () => {
       await new Promise((r) => setTimeout(r, 180));
       expect(mockView.webview.postedMessages.length).toBe(beforeCount + 1);
     });
+
+    it("T2.6: HTML includes 'Not used' styling and supports Gemini 4 Argon quota family", async () => {
+      const { tokenManager, context } = await setupTestTokenManager();
+      const { quotaMonitor } = setupTestQuotaMonitor(tokenManager, context);
+      const logManager = new LogManager(context as any);
+
+      const provider = new WebviewProvider(
+        context as any,
+        tokenManager,
+        quotaMonitor,
+        () => {},
+        logManager,
+      );
+
+      const mockView = new MockWebviewView();
+      provider.resolveWebviewView(mockView as any);
+
+      const html = mockView.webview.html;
+      expect(html).toContain(".reset-tag.not-used");
+      expect(html).toContain("Not used");
+      expect(html).toContain("argon");
+      expect(html).toContain("Gemini 4 Argon");
+    });
   });
 });

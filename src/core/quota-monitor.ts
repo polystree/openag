@@ -413,6 +413,7 @@ export class QuotaMonitor {
       if (groups.length > 0) {
         let gemini5h: QuotaLimitInfo | undefined, geminiWeekly: QuotaLimitInfo | undefined;
         let claude5h: QuotaLimitInfo | undefined, claudeWeekly: QuotaLimitInfo | undefined;
+        let argon5h: QuotaLimitInfo | undefined, argonWeekly: QuotaLimitInfo | undefined;
 
         for (const grp of groups) {
           const groupName = grp.displayName || "";
@@ -421,7 +422,7 @@ export class QuotaMonitor {
           for (const b of buckets) {
             const bId = (b.bucketId || "").toLowerCase();
             const bName = (b.displayName || "").toLowerCase();
-            const isClaude = this.categorizeFamily(groupName, `${bId} ${bName}`) === "claude";
+            const fam = this.categorizeFamily(groupName, `${bId} ${bName}`);
             const frac = extractRemainingFraction(b);
             const pct = Math.max(0, Math.min(100, Math.round(frac * 100)));
             const resetTime = extractResetTime(b, pct);
@@ -442,7 +443,10 @@ export class QuotaMonitor {
 
             const limitInfo: QuotaLimitInfo = { percent: pct, resetTime };
 
-            if (isClaude) {
+            if (fam === "argon") {
+              if (is5h) argon5h = limitInfo;
+              else if (isWk) argonWeekly = limitInfo;
+            } else if (fam === "claude") {
               if (is5h) claude5h = limitInfo;
               else if (isWk) claudeWeekly = limitInfo;
             } else {
@@ -454,6 +458,7 @@ export class QuotaMonitor {
 
         const geminiPct = Math.min(gemini5h?.percent ?? 100, geminiWeekly?.percent ?? 100);
         const claudePct = Math.min(claude5h?.percent ?? 100, claudeWeekly?.percent ?? 100);
+        const argonPct = Math.min(argon5h?.percent ?? 100, argonWeekly?.percent ?? 100);
 
         families = [
           {
@@ -472,6 +477,14 @@ export class QuotaMonitor {
             limit5h: claude5h,
             limitWeekly: claudeWeekly,
           },
+          {
+            key: "argon",
+            label: "Gemini 4 Argon",
+            percent: argonPct,
+            resetTime: (argon5h && argon5h.percent < 100) ? argon5h.resetTime : (argonWeekly && argonWeekly.percent < 100) ? argonWeekly.resetTime : undefined,
+            limit5h: argon5h,
+            limitWeekly: argonWeekly,
+          },
         ];
       } else if (data.models && Object.keys(data.models).length > 0) {
         for (const [name, info] of Object.entries(data.models)) {
@@ -485,6 +498,7 @@ export class QuotaMonitor {
         families = [
           { key: "gemini", label: "Gemini", percent: 100 },
           { key: "claude", label: "Claude", percent: 100 },
+          { key: "argon", label: "Gemini 4 Argon", percent: 100 },
         ];
       }
 
@@ -503,7 +517,7 @@ export class QuotaMonitor {
   }
 
   private extractFamilyQuotas(models: ModelQuota[]): FamilyQuota[] {
-    const map = new Map<"gemini" | "claude", { minPct: number; earliestReset?: string }>();
+    const map = new Map<"gemini" | "claude" | "argon", { minPct: number; earliestReset?: string }>();
     for (const m of models) {
       if (m.family === "other") continue;
       const cur = map.get(m.family);
@@ -518,7 +532,7 @@ export class QuotaMonitor {
     for (const [key, val] of map.entries()) {
       result.push({
         key,
-        label: key === "gemini" ? "Gemini" : "Claude",
+        label: key === "gemini" ? "Gemini" : key === "claude" ? "Claude" : "Gemini 4 Argon",
         percent: val.minPct,
         resetTime: val.earliestReset,
         limit5h: { percent: val.minPct, resetTime: val.earliestReset },
@@ -526,6 +540,7 @@ export class QuotaMonitor {
     }
     if (!result.some((f) => f.key === "gemini")) result.push({ key: "gemini", label: "Gemini", percent: 100 });
     if (!result.some((f) => f.key === "claude")) result.push({ key: "claude", label: "Claude", percent: 100 });
+    if (!result.some((f) => f.key === "argon")) result.push({ key: "argon", label: "Gemini 4 Argon", percent: 100 });
     return result;
   }
 
@@ -654,8 +669,9 @@ export class QuotaMonitor {
     }
   }
 
-  private categorizeFamily(name: string, bucketId = ""): "gemini" | "claude" | "other" {
+  private categorizeFamily(name: string, bucketId = ""): "gemini" | "claude" | "argon" | "other" {
     const lower = `${name} ${bucketId}`.toLowerCase();
+    if (lower.includes("argon")) return "argon";
     if (
       lower.includes("claude") ||
       lower.includes("sonnet") ||

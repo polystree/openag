@@ -4,7 +4,7 @@ export type AccountTier = "free" | "plus" | "pro" | "ultra" | "unknown";
 
 export type AccountHealth = "healthy" | "expired" | "tos_required" | "error";
 
-export type ModelAffinity = "all" | "gemini" | "claude";
+export type ModelAffinity = "all" | "gemini" | "claude" | "argon";
 
 export type PoolRole = "primary" | "reserve";
 
@@ -51,7 +51,7 @@ export interface DecryptedPoolData {
 
 export interface ModelQuota {
   name: string;
-  family: "gemini" | "claude" | "other";
+  family: "gemini" | "claude" | "argon" | "other";
   percent: number;
   resetTime?: string;
 }
@@ -62,7 +62,7 @@ export interface QuotaLimitInfo {
 }
 
 export interface FamilyQuota {
-  key: "gemini" | "claude";
+  key: "gemini" | "claude" | "argon";
   label: string;
   percent: number;
   resetTime?: string;

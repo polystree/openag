@@ -40,12 +40,12 @@ export function extractUriFromText(text: string): string | null {
 }
 
 export class UsageTracker {
-  private activeModel = "Gemini 3.8 Flash (High)";
+  private activeModel = "";
   private readonly modelContextLimits = new Map<string, number>();
   private currentUsage: ContextUsage = {
     current: 0,
     limit: 1048576,
-    model: "Gemini 3.8 Flash (High)",
+    model: "",
     percent: 0,
   };
 
@@ -336,7 +336,7 @@ export class UsageTracker {
       if (genMetrics?.latestModel) {
         const formatted = formatDynamicModelName(genMetrics.latestModel);
         if (formatted) this.activeModel = formatted;
-      } else {
+      } else if (parsed.detectedModel) {
         this.activeModel = parsed.detectedModel;
       }
 

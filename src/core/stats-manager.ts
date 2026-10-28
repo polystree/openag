@@ -206,7 +206,7 @@ export function parseTranscriptLines(
   fallbackPrompt = "",
   convTitle = "",
 ): ParsedTranscript {
-  let detectedModel = "Gemini 3.7 Flash High";
+  let detectedModel = "";
   let initialPrompt = fallbackPrompt;
   const completedBlocks: RequestBlock[] = [];
   let currentBlock: RequestBlock | null = null;
