@@ -307,12 +307,12 @@ describe("Tier 3: Cross-Feature Combinations", () => {
     }
   });
 
-  it("T3.14: Round-Robin strategy prioritizes imminent refill candidate (<= 45m)", async () => {
-    setMockConfig("openag.rotationStrategy", "round_robin");
+  it("T3.14: Auto-highest strategy prioritizes imminent refill candidate (<= 45m)", async () => {
+    setMockConfig("openag.rotationStrategy", "auto_highest");
     const { tokenManager } = await setupTestTokenManager({
       accounts: [acc1, acc2],
       activeEmail: acc1.email,
-      config: { rotationStrategy: "round_robin" },
+      config: { rotationStrategy: "auto_highest" },
     });
 
     // Acc1 has 60%
@@ -328,24 +328,24 @@ describe("Tier 3: Cross-Feature Combinations", () => {
     expect(selected?.email).toBe(acc2.email);
   });
 
-  it("T3.15: Cache-Optimized strategy retains active account as long as quota > 15%", async () => {
-    setMockConfig("openag.rotationStrategy", "cache_optimized");
+  it("T3.15: Auto-highest strategy rotates when candidate quota advantage strictly exceeds hysteresis delta", async () => {
+    setMockConfig("openag.rotationStrategy", "auto_highest");
     const { tokenManager } = await setupTestTokenManager({
       accounts: [acc1, acc2],
       activeEmail: acc1.email,
-      config: { rotationStrategy: "cache_optimized" },
+      config: { rotationStrategy: "auto_highest" },
     });
 
-    // Acc1 has 20% (> 15%), Acc2 has 100%
-    // Cache-optimized sticks to active account to preserve KV cache
+    // Acc1 has 20%, Acc2 has 100% (delta = 80 > 15)
     const quotas: Record<string, AccountQuota> = {
       [acc1.email]: createAccountQuota(acc1.email, [createFamilyQuota("gemini", 20)]),
       [acc2.email]: createAccountQuota(acc2.email, [createFamilyQuota("gemini", 100)]),
     };
 
     const selected = await tokenManager.autoSelectHighestQuota(quotas, "auto", "gemini-1.5-pro");
-    expect(selected).toBeNull();
-    expect(tokenManager.getActiveEmail()).toBe(acc1.email);
+    expect(selected).not.toBeNull();
+    expect(selected?.email).toBe(acc2.email);
+    expect(tokenManager.getActiveEmail()).toBe(acc2.email);
   });
 
   it("T3.16: TokenManager.reauthAccount rejects when browser signs into a different email", async () => {

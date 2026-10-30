@@ -70,14 +70,10 @@
         "openag.rotationStrategy": {
           "type": "string",
           "enum": [
-            "auto_highest",
-            "cache_optimized",
-            "round_robin"
+            "auto_highest"
           ],
           "enumDescriptions": [
-            "Always pick the account with the highest available quota",
-            "Stay on the active account until its quota drops below 15% to preserve prompt cache hits",
-            "Cycle sequentially through healthy accounts"
+            "Always pick the account with the highest available quota"
           ],
           "default": "auto_highest",
           "description": "Account rotation strategy."

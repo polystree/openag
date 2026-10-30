@@ -7,312 +7,426 @@ import type { UsageTracker } from "../core/usage-tracker.js";
 import type { OpenAGConfig } from "../types.js";
 
 type WebviewMessage =
-  | { action: "ready"; payload?: undefined }
-  | { action: "addAccount"; payload?: undefined }
-  | { action: "refreshQuotas"; payload?: undefined }
-  | { action: "toggleAccount"; payload: { email: string; enabled: boolean } }
-  | { action: "updateAccountMeta"; payload: { email: string; alias?: string; affinity?: import("../types.js").ModelAffinity; role?: import("../types.js").PoolRole } }
-  | { action: "reauthAccount"; payload: string }
-  | { action: "refreshAccount"; payload: string }
-  | { action: "removeAccount"; payload: string }
-  | { action: "clearLogs"; payload?: undefined }
-  | { action: "updateConfig"; payload: Partial<OpenAGConfig> }
-  | { action: "recalculateStats"; payload?: undefined };
+	| { action: "ready"; payload?: undefined }
+	| { action: "addAccount"; payload?: undefined }
+	| { action: "refreshQuotas"; payload?: undefined }
+	| { action: "toggleAccount"; payload: { email: string; enabled: boolean } }
+	| {
+			action: "updateAccountMeta";
+			payload: {
+				email: string;
+				alias?: string;
+				affinity?: import("../types.js").ModelAffinity;
+				role?: import("../types.js").PoolRole;
+			};
+	  }
+	| { action: "reauthAccount"; payload: string }
+	| { action: "refreshAccount"; payload: string }
+	| { action: "removeAccount"; payload: string }
+	| { action: "clearLogs"; payload?: undefined }
+	| { action: "updateConfig"; payload: Partial<OpenAGConfig> }
+	| { action: "recalculateStats"; payload?: undefined };
 
 export class WebviewProvider implements vscode.WebviewViewProvider {
-  public static readonly viewType = "openag.accounts";
-  private view?: vscode.WebviewView;
-  private isDirty = false;
-  private refreshTimer: NodeJS.Timeout | null = null;
+	public static readonly viewType = "openag.accounts";
+	private view?: vscode.WebviewView;
+	private isDirty = false;
+	private refreshTimer: NodeJS.Timeout | null = null;
 
-  constructor(
-    private readonly context: vscode.ExtensionContext,
-    private readonly tokenManager: TokenManager,
-    private readonly quotaMonitor: QuotaMonitor,
-    private readonly log: (msg: string) => void,
-    private readonly logManager: LogManager,
-    private readonly statsManager?: StatsManager,
-    private readonly usageTracker?: UsageTracker,
-  ) {}
+	constructor(
+		private readonly context: vscode.ExtensionContext,
+		private readonly tokenManager: TokenManager,
+		private readonly quotaMonitor: QuotaMonitor,
+		private readonly log: (msg: string) => void,
+		private readonly logManager: LogManager,
+		private readonly statsManager?: StatsManager,
+		private readonly usageTracker?: UsageTracker,
+	) {}
 
-  public resolveWebviewView(webviewView: vscode.WebviewView): void {
-    this.view = webviewView;
-    webviewView.webview.options = {
-      enableScripts: true,
-      localResourceRoots: [this.context.extensionUri],
-    };
+	public resolveWebviewView(webviewView: vscode.WebviewView): void {
+		this.view = webviewView;
+		webviewView.webview.options = {
+			enableScripts: true,
+			localResourceRoots: [this.context.extensionUri],
+		};
 
-    webviewView.webview.html = this.getHtmlForWebview();
-    this.setWebviewMessageListener(webviewView.webview);
+		webviewView.webview.html = this.getHtmlForWebview();
+		this.setWebviewMessageListener(webviewView.webview);
 
-    webviewView.onDidChangeVisibility(() => {
-      if (webviewView.visible && this.isDirty) {
-        this.postState();
-      }
-    });
+		webviewView.onDidChangeVisibility(() => {
+			if (webviewView.visible && this.isDirty) {
+				this.postState();
+			}
+		});
 
-    this.postState();
-  }
+		this.postState();
+	}
 
-  public refresh(): void {
-    if (this.refreshTimer) return;
-    this.refreshTimer = setTimeout(() => {
-      this.refreshTimer = null;
-      this.postState();
-    }, 150);
-  }
+	public refresh(): void {
+		if (this.refreshTimer) return;
+		this.refreshTimer = setTimeout(() => {
+			this.refreshTimer = null;
+			this.postState();
+		}, 150);
+	}
 
-  private getCurrentStateData(): Record<string, unknown> {
-    const accounts = this.tokenManager.getAccounts();
-    const activeEmail = this.tokenManager.getActiveEmail();
-    const quotas = this.quotaMonitor.getAllQuotas();
-    const config = this.tokenManager.getConfig();
-    const logs = this.logManager.getLogs();
-    const todayStats = this.statsManager?.getTodayStats() || {
-      date: new Date().toISOString().slice(0, 10),
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheHitTokens: 0,
-      cacheMissTokens: 0,
-      totalTokens: 0,
-      models: {},
-      conversations: {},
-    };
-    const hourlyStats = this.statsManager?.getTodayHourlyStats() || [];
-    const dailyStats = this.statsManager?.getDailyStats(7) || [];
-    const weeklyStats = this.statsManager?.getWeeklyStats(4) || [];
-    const monthlyStats = this.statsManager?.getMonthlyStats(12) || [];
-    const conversationsList = this.statsManager?.getConversationsList(40) || [];
-    const requestsList = this.statsManager?.getRequestsList(40) || [];
-    const allTimeSummary = this.statsManager?.getAllTimeSummary() || {
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheHitTokens: 0,
-      cacheMissTokens: 0,
-      totalTokens: 0,
-      totalTurns: 0,
-      cacheHitRate: 0,
-    };
+	private getCurrentStateData(): Record<string, unknown> {
+		const accounts = this.tokenManager.getAccounts();
+		const activeEmail = this.tokenManager.getActiveEmail();
+		const quotas = this.quotaMonitor.getAllQuotas();
+		const config = this.tokenManager.getConfig();
+		const logs = this.logManager.getLogs();
+		const todayStats = this.statsManager?.getTodayStats() || {
+			date: new Date().toISOString().slice(0, 10),
+			inputTokens: 0,
+			outputTokens: 0,
+			cacheHitTokens: 0,
+			cacheMissTokens: 0,
+			totalTokens: 0,
+			models: {},
+			conversations: {},
+		};
+		const hourlyStats = this.statsManager?.getTodayHourlyStats() || [];
+		const dailyStats = this.statsManager?.getDailyStats(7) || [];
+		const weeklyStats = this.statsManager?.getWeeklyStats(4) || [];
+		const monthlyStats = this.statsManager?.getMonthlyStats(12) || [];
+		const conversationsList = this.statsManager?.getConversationsList(40) || [];
+		const requestsList = this.statsManager?.getRequestsList(40) || [];
+		const allTimeSummary = this.statsManager?.getAllTimeSummary() || {
+			inputTokens: 0,
+			outputTokens: 0,
+			cacheHitTokens: 0,
+			cacheMissTokens: 0,
+			totalTokens: 0,
+			totalTurns: 0,
+			cacheHitRate: 0,
+		};
 
-    return {
-      accounts,
-      activeEmail,
-      quotas,
-      config,
-      logs,
-      stats: {
-        today: todayStats,
-        hourly: hourlyStats,
-        daily: dailyStats,
-        weekly: weeklyStats,
-        monthly: monthlyStats,
-        conversations: conversationsList,
-        requests: requestsList,
-        allTime: allTimeSummary,
-        burnRate: this.statsManager?.getBurnRate(15) || { tokensPerMin: 0, recentTurns: 0 },
-      },
-    };
-  }
+		return {
+			accounts,
+			activeEmail,
+			quotas,
+			config,
+			logs,
+			stats: {
+				today: todayStats,
+				hourly: hourlyStats,
+				daily: dailyStats,
+				weekly: weeklyStats,
+				monthly: monthlyStats,
+				conversations: conversationsList,
+				requests: requestsList,
+				allTime: allTimeSummary,
+				burnRate: this.statsManager?.getBurnRate(15) || {
+					tokensPerMin: 0,
+					recentTurns: 0,
+				},
+			},
+		};
+	}
 
-  private postState(forceRender = false): void {
-    if (!this.view) return;
-    if (!this.view.visible) {
-      this.isDirty = true;
-      return;
-    }
-    this.isDirty = false;
-    try {
-      void this.view.webview.postMessage({
-        type: "state",
-        data: this.getCurrentStateData(),
-        forceRender,
-      });
-    } catch (e: unknown) {
-      this.log(`postState error: ${e instanceof Error ? e.message : String(e)}`);
-    }
-  }
+	private postState(forceRender = false): void {
+		if (!this.view) return;
+		if (!this.view.visible) {
+			this.isDirty = true;
+			return;
+		}
+		this.isDirty = false;
+		try {
+			void this.view.webview.postMessage({
+				type: "state",
+				data: this.getCurrentStateData(),
+				forceRender,
+			});
+		} catch (e: unknown) {
+			this.log(
+				`postState error: ${e instanceof Error ? e.message : String(e)}`,
+			);
+		}
+	}
 
-  private setWebviewMessageListener(webview: vscode.Webview): void {
-    webview.onDidReceiveMessage(async (message: WebviewMessage) => {
-      try {
-        switch (message.action) {
-          case "ready":
-            this.postState();
-            break;
-          case "addAccount":
-            await vscode.commands.executeCommand("openag.addAccount");
-            break;
-          case "refreshQuotas":
-            try {
-              this.logManager.addLog("info", "QUOTA", "Refreshing account pool quotas...");
-              await this.quotaMonitor.pollAllAccounts(true);
-              const poolCount = this.tokenManager.getAccounts().filter((a) => a.status !== "disabled").length;
-              this.logManager.addLog("info", "QUOTA", `Quota refresh complete (${poolCount} active accounts updated).`);
-            } catch (e: unknown) {
-              this.logManager.addLog("error", "QUOTA", `Quota refresh failed: ${e instanceof Error ? e.message : String(e)}`);
-            } finally {
-              this.postState(true);
-            }
-            break;
-          case "toggleAccount":
-            if (message.payload) {
-              await this.tokenManager.toggleAccountEnabled(message.payload.email, message.payload.enabled);
-              void this.quotaMonitor.pollAllAccounts();
-              this.refresh();
-            }
-            break;
-          case "updateAccountMeta":
-            if (message.payload) {
-              await this.tokenManager.updateAccountMeta(message.payload.email, message.payload);
-              this.refresh();
-            }
-            break;
-          case "reauthAccount":
-            if (message.payload) {
-              try {
-                const acc = await this.tokenManager.reauthAccount(message.payload);
-                void this.quotaMonitor.refreshAccountQuota(acc.email);
-                void vscode.window.showInformationMessage(`OpenAG: Re-authenticated ${acc.email}`);
-              } catch (e: unknown) {
-                void vscode.window.showErrorMessage(`OpenAG: Re-auth failed - ${e instanceof Error ? e.message : String(e)}`);
-              }
-              this.refresh();
-            }
-            break;
-          case "refreshAccount":
-            if (message.payload) {
-              try {
-                this.logManager.addLog("info", "QUOTA", `Refreshing quota for ${message.payload}...`);
-                await this.quotaMonitor.refreshAccountQuota(message.payload);
-                this.logManager.addLog("info", "QUOTA", `Quota refreshed for ${message.payload}.`);
-              } catch (e: unknown) {
-                this.logManager.addLog("error", "QUOTA", `Account quota refresh failed: ${e instanceof Error ? e.message : String(e)}`);
-              } finally {
-                this.postState(true);
-              }
-            }
-            break;
-          case "removeAccount":
-            if (message.payload) {
-              await this.tokenManager.removeAccount(message.payload);
-              this.refresh();
-            }
-            break;
-          case "clearLogs":
-            this.logManager.clear();
-            this.refresh();
-            break;
-          case "updateConfig":
-            if (message.payload) {
-              await this.tokenManager.updateConfig(message.payload);
-              this.refresh();
-            }
-            break;
-          case "recalculateStats":
-            if (this.statsManager) {
-              await this.statsManager.resetAndRecalculate();
-              this.usageTracker?.resetProcessedLines();
-              this.refresh();
-            }
-            break;
-        }
-      } catch (err: unknown) {
-        this.log(`Message handler error: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    });
-  }
+	private setWebviewMessageListener(webview: vscode.Webview): void {
+		webview.onDidReceiveMessage(async (message: WebviewMessage) => {
+			try {
+				switch (message.action) {
+					case "ready":
+						this.postState();
+						break;
+					case "addAccount":
+						await vscode.commands.executeCommand("openag.addAccount");
+						break;
+					case "refreshQuotas":
+						try {
+							this.logManager.addLog(
+								"info",
+								"QUOTA",
+								"Refreshing account pool quotas...",
+							);
+							await this.quotaMonitor.pollAllAccounts(true);
+							const poolCount = this.tokenManager
+								.getAccounts()
+								.filter((a) => a.status !== "disabled").length;
+							this.logManager.addLog(
+								"info",
+								"QUOTA",
+								`Quota refresh complete (${poolCount} active accounts updated).`,
+							);
+						} catch (e: unknown) {
+							this.logManager.addLog(
+								"error",
+								"QUOTA",
+								`Quota refresh failed: ${e instanceof Error ? e.message : String(e)}`,
+							);
+						} finally {
+							this.postState(true);
+						}
+						break;
+					case "toggleAccount":
+						if (message.payload) {
+							await this.tokenManager.toggleAccountEnabled(
+								message.payload.email,
+								message.payload.enabled,
+							);
+							void this.quotaMonitor.pollAllAccounts();
+							this.refresh();
+						}
+						break;
+					case "updateAccountMeta":
+						if (message.payload) {
+							await this.tokenManager.updateAccountMeta(
+								message.payload.email,
+								message.payload,
+							);
+							this.refresh();
+						}
+						break;
+					case "reauthAccount":
+						if (message.payload) {
+							try {
+								const acc = await this.tokenManager.reauthAccount(
+									message.payload,
+								);
+								void this.quotaMonitor.refreshAccountQuota(acc.email);
+								void vscode.window.showInformationMessage(
+									`OpenAG: Re-authenticated ${acc.email}`,
+								);
+							} catch (e: unknown) {
+								void vscode.window.showErrorMessage(
+									`OpenAG: Re-auth failed - ${e instanceof Error ? e.message : String(e)}`,
+								);
+							}
+							this.refresh();
+						}
+						break;
+					case "refreshAccount":
+						if (message.payload) {
+							try {
+								this.logManager.addLog(
+									"info",
+									"QUOTA",
+									`Refreshing quota for ${message.payload}...`,
+								);
+								await this.quotaMonitor.refreshAccountQuota(message.payload);
+								this.logManager.addLog(
+									"info",
+									"QUOTA",
+									`Quota refreshed for ${message.payload}.`,
+								);
+							} catch (e: unknown) {
+								this.logManager.addLog(
+									"error",
+									"QUOTA",
+									`Account quota refresh failed: ${e instanceof Error ? e.message : String(e)}`,
+								);
+							} finally {
+								this.postState(true);
+							}
+						}
+						break;
+					case "removeAccount":
+						if (message.payload) {
+							await this.tokenManager.removeAccount(message.payload);
+							this.refresh();
+						}
+						break;
+					case "clearLogs":
+						this.logManager.clear();
+						this.refresh();
+						break;
+					case "updateConfig":
+						if (message.payload) {
+							await this.tokenManager.updateConfig(message.payload);
+							this.refresh();
+						}
+						break;
+					case "recalculateStats":
+						if (this.statsManager) {
+							await this.statsManager.resetAndRecalculate();
+							this.usageTracker?.resetProcessedLines();
+							this.refresh();
+						}
+						break;
+				}
+			} catch (err: unknown) {
+				this.log(
+					`Message handler error: ${err instanceof Error ? err.message : String(err)}`,
+				);
+			}
+		});
+	}
 
-  private getHtmlForWebview(): string {
-    const initialStateJson = JSON.stringify(this.getCurrentStateData()).replace(/</g, "\\u003c");
-    return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';"><meta name="viewport" content="width=device-width,initial-scale=1.0"><style>
+	private getHtmlForWebview(): string {
+		const initialStateJson = JSON.stringify(this.getCurrentStateData()).replace(
+			/</g,
+			"\\u003c",
+		);
+		return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';"><meta name="viewport" content="width=device-width,initial-scale=1.0"><style>
 :root {
-  --bg: var(--vscode-sideBar-background, #1e1e2e);
-  --card: var(--vscode-editor-background, #181825);
-  --border: var(--vscode-widget-border, rgba(255,255,255,.08));
-  --text: var(--vscode-foreground, #cdd6f4);
+  /* Surfaces & Backgrounds Hooked Directly to Antigravity IDE */
+  --bg: var(--vscode-sideBar-background, var(--vscode-editor-background, #1e1e2e));
+  --card: var(--vscode-editorWidget-background, var(--vscode-sideBar-background, #181825));
+  --border: var(--vscode-widget-border, var(--vscode-sideBar-border, rgba(255,255,255,.08)));
+  --text: var(--vscode-sideBar-foreground, var(--vscode-foreground, #cdd6f4));
   --dim: var(--vscode-descriptionForeground, #a6adc8);
+
+  /* Actions & Interactive Elements Hooked to IDE Theme */
   --accent: var(--vscode-button-background, #0078d4);
   --accent-h: var(--vscode-button-hoverBackground, #006abc);
   --hover: var(--vscode-list-hoverBackground, rgba(255,255,255,.05));
+
+  /* Badges from IDE */
   --badge-bg: var(--vscode-badge-background, rgba(0,120,212,.25));
-  --badge-fg: var(--vscode-badge-foreground, #fff);
-  --font: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif);
-  --mono: var(--vscode-editor-font-family, monospace);
-  --warn: #f59e0b;
-  --danger: #ef4444;
-  --success: #10b981;
-  --cached: #a855f7;
-  --input-col: #3b82f6;
-  --output-col: #10b981;
-  --thinking-col: #f59e0b;
+  --badge-fg: var(--vscode-badge-foreground, #ffffff);
+
+  /* Workbench Typography Hooked Directly to Antigravity IDE Settings */
+  --font: var(--vscode-font-family, system-ui, -apple-system, sans-serif);
+  --font-weight: var(--vscode-font-weight, 400);
+  --font-size: var(--vscode-font-size, 13px);
+
+  /* Editor Monospace Typography Hooked Directly to Antigravity IDE Editor */
+  --mono: var(--vscode-editor-font-family, var(--monaco-monospace-font, monospace));
+  --mono-weight: var(--vscode-editor-font-weight, normal);
+  --mono-size: var(--vscode-editor-font-size, 12px);
+
+  /* Semantic Theme Tokens Hooked to IDE */
+  --warn: var(--vscode-editorWarning-foreground, #f59e0b);
+  --danger: var(--vscode-errorForeground, var(--vscode-inputValidation-errorForeground, #ef4444));
+  --success: var(--vscode-testing-iconPassed, #10b981);
+  --cached: var(--vscode-charts-purple, #a855f7);
+  --input-col: var(--vscode-charts-blue, #3b82f6);
+  --output-col: var(--vscode-charts-green, #10b981);
+  --thinking-col: var(--vscode-charts-orange, var(--vscode-charts-yellow, #f59e0b));
 }
-* { box-sizing: border-box; margin: 0; padding: 0; user-select: none; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.15) transparent; }
-::-webkit-scrollbar { width: 4px; height: 4px; }
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
+button, input, select, textarea { font-family: inherit; font-weight: inherit; font-size: inherit; color: inherit; }
+::selection { background: var(--vscode-editor-selectionBackground, rgba(0,120,212,.3)); color: var(--vscode-editor-selectionForeground, inherit); }
+* { scrollbar-width: thin; scrollbar-color: var(--vscode-scrollbarSlider-background, rgba(255,255,255,.15)) transparent; }
+::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(255,255,255,.15); border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,.35); }
+::-webkit-scrollbar-thumb { background: var(--vscode-scrollbarSlider-background, rgba(255,255,255,.15)); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--vscode-scrollbarSlider-hoverBackground, rgba(255,255,255,.35)); }
+::-webkit-scrollbar-thumb:active { background: var(--vscode-scrollbarSlider-activeBackground, rgba(255,255,255,.45)); }
 ::-webkit-scrollbar-corner { background: transparent; }
 
-body { font-family: var(--font); background: var(--bg); color: var(--text); padding: 8px; display: flex; flex-direction: column; gap: 8px; overflow-x: hidden; font-size: 11px; }
+body {
+  font-family: var(--font);
+  font-weight: var(--font-weight);
+  font-size: calc(var(--font-size) * 0.88);
+  line-height: 1.4;
+  background: var(--bg);
+  color: var(--text);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+a:focus-visible,
+button:focus-visible,
+select:focus-visible,
+input:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+code, pre, .log-line, .mono {
+  font-family: var(--mono);
+  font-weight: var(--mono-weight);
+}
+.pct-text, .stat-val, .cb-val {
+  font-variant-numeric: tabular-nums;
+}
 
 .row { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-width: 0; }
-.badge { background: var(--accent); color: #fff; font-weight: 700; font-size: 10px; padding: 2px 6px; border-radius: 4px; flex-shrink: 0; }
-.info-badge { display: inline-flex; align-items: center; justify-content: center; width: 13px; height: 13px; border-radius: 50%; background: rgba(255,255,255,.1); color: var(--dim); font-size: 9px; font-weight: 700; font-family: var(--mono); cursor: help; user-select: none; border: 1px solid var(--border); transition: background .12s, color .12s; }
+.badge { background: var(--badge-bg); color: var(--badge-fg); font-weight: 700; font-size: 0.85em; padding: 2px 6px; border-radius: 3px; flex-shrink: 0; }
+.info-badge { display: inline-flex; align-items: center; justify-content: center; width: 13px; height: 13px; border-radius: 50%; background: rgba(255,255,255,.1); color: var(--dim); font-size: 0.8em; font-weight: 700; cursor: help; user-select: none; border: 1px solid var(--border); transition: background .12s, color .12s; }
 .info-badge:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
-.sec-head { font-size: 10.5px; font-weight: 600; color: var(--dim); margin-top: 2px; display: flex; align-items: center; justify-content: space-between; }
+.sec-head { font-size: 0.88em; font-weight: 600; color: var(--vscode-sideBarSectionHeader-foreground, var(--dim)); margin-top: 2px; display: flex; align-items: center; justify-content: space-between; }
 
 .btn-row { display: flex; gap: 4px; align-items: center; justify-content: flex-end; flex-shrink: 0; }
-.btn { display: inline-flex; align-items: center; justify-content: center; gap: 4px; background: var(--accent); color: #fff; border: 1px solid transparent; border-radius: 4px; padding: 3px 8px; font-family: var(--font); font-size: 10.5px; font-weight: 500; cursor: pointer; white-space: nowrap; flex-shrink: 0; }
-.btn:hover { background: var(--accent-h); }
+.btn-row .btn { height: 22px; box-sizing: border-box; }
+.btn-row .btn-icon { width: 22px; height: 22px; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 4px; background: var(--vscode-button-background, var(--accent)); color: var(--vscode-button-foreground, #fff); border: 1px solid var(--vscode-button-border, transparent); border-radius: 3px; padding: 3px 8px; font-size: 0.9em; font-weight: 500; cursor: pointer; white-space: nowrap; flex-shrink: 0; }
+.btn:hover { background: var(--vscode-button-hoverBackground, var(--accent-h)); }
 .btn-sec { background: var(--vscode-button-secondaryBackground, rgba(255,255,255,.08)); color: var(--vscode-button-secondaryForeground, var(--text)); border: 1px solid var(--vscode-button-border, var(--border)); }
 .btn-sec:hover { background: var(--vscode-button-secondaryHoverBackground, rgba(255,255,255,.14)); }
-.btn-icon { padding: 2px 4px; font-size: 9.5px; min-width: 18px; }
+.btn-icon { padding: 2px 4px; font-size: 0.85em; min-width: 18px; }
 .btn.loading { opacity: 0.75; cursor: wait; }
 @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 .spin { animation: spin 0.8s linear infinite; }
 
-.sort-select { background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 1px 3px; font-size: 9px; font-family: var(--font); outline: none; cursor: pointer; }
-.sort-select:focus { border-color: var(--accent); }
+.sort-select { background: var(--vscode-dropdown-background, var(--vscode-input-background, var(--card))); color: var(--vscode-dropdown-foreground, var(--vscode-input-foreground, var(--text))); border: 1px solid var(--vscode-dropdown-border, var(--vscode-input-border, var(--border))); border-radius: 3px; padding: 1px 3px; font-size: 0.88em; outline: none; cursor: pointer; }
+.sort-select:focus { border-color: var(--vscode-focusBorder); }
 
-.segmented-tabs { display: flex; background: var(--card); border: 1px solid var(--border); border-radius: 5px; padding: 2px; gap: 2px; width: 100%; }
-.tab-btn { flex: 1; min-width: 0; padding: 3px 2px; font-size: 10px; font-weight: 600; font-family: var(--font); background: transparent; color: var(--dim); border: none; border-radius: 3px; cursor: pointer; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: background .12s, color .12s; }
+.segmented-tabs { display: flex; background: var(--card); border: 1px solid var(--border); border-radius: 4px; padding: 2px; gap: 2px; width: 100%; }
+.tab-btn { flex: 1; min-width: 0; padding: 3px 2px; font-size: 0.88em; font-weight: 600; background: transparent; color: var(--dim); border: none; border-radius: 3px; cursor: pointer; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: background .12s, color .12s; }
 .tab-btn:hover { color: var(--text); background: var(--hover); }
-.tab-btn.active { background: var(--accent); color: #fff; }
+.tab-btn.active { background: var(--accent); color: var(--vscode-button-foreground, #fff); }
 
-.card { background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; display: flex; flex-direction: column; gap: 5px; min-width: 0; contain: content; }
-.card.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 5px; padding: 6px 8px; display: flex; flex-direction: column; gap: 5px; min-width: 0; position: relative; }
+.card.active { border-color: var(--vscode-focusBorder, var(--accent)); box-shadow: 0 0 0 1px var(--vscode-focusBorder, var(--accent)); }
 .card-head { display: flex; align-items: center; justify-content: space-between; gap: 4px; min-width: 0; }
-.card-title { font-size: 11px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; user-select: text; }
+.card-title { font-size: 0.98em; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; user-select: text; }
 .card-head .card-title { flex: 1; }
 
-.card-meta { font-size: 9px; font-family: var(--mono); color: var(--dim); display: flex; align-items: center; gap: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: -1px; }
+.card-meta { font-size: 0.82em; color: var(--dim); display: flex; align-items: center; gap: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: -1px; }
 .card-breakdown { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px; background: transparent; border: none; padding: 0; margin-top: 1px; }
 .cb-item { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-.cb-lbl { font-size: 8px; color: var(--dim); text-transform: uppercase; font-weight: 600; letter-spacing: 0.3px; }
-.cb-val { font-size: 10.5px; font-weight: 700; font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cb-lbl { font-size: 0.75em; color: var(--dim); text-transform: uppercase; font-weight: 600; letter-spacing: 0.3px; }
+.cb-val { font-size: 0.95em; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-.tier-tag { font-size: 8.5px; font-weight: 700; padding: 1px 4px; border-radius: 3px; text-transform: uppercase; background: var(--badge-bg); color: var(--badge-fg); flex-shrink: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; }
-.active-tag { font-size: 8.5px; font-weight: 700; padding: 1px 4px; border-radius: 3px; background: rgba(16,185,129,.15); color: var(--success); border: 1px solid rgba(16,185,129,.4); flex-shrink: 0; }
-.dis-tag { font-size: 8.5px; font-weight: 700; padding: 1px 4px; border-radius: 3px; background: rgba(255,255,255,.08); color: var(--dim); flex-shrink: 0; }
-.chip-tag { font-size: 8px; font-weight: 700; font-family: var(--mono); padding: 1px 4px; border-radius: 3px; background: rgba(255,255,255,.08); color: var(--text); border: 1px solid var(--border); cursor: pointer; user-select: none; flex-shrink: 0; }
-.chip-tag:hover { background: var(--hover); border-color: var(--accent); }
-.err-tag { font-size: 8px; font-weight: 700; font-family: var(--mono); padding: 1px 4px; border-radius: 3px; background: rgba(239,68,68,.15); color: var(--danger); border: 1px solid rgba(239,68,68,.4); flex-shrink: 0; }
-.warn-tag { font-size: 8px; font-weight: 700; font-family: var(--mono); padding: 1px 4px; border-radius: 3px; background: rgba(245,158,11,.15); color: var(--warn); border: 1px solid rgba(245,158,11,.4); flex-shrink: 0; }
+.tier-tag { font-size: 0.8em; font-weight: 700; padding: 1px 4px; border-radius: 3px; text-transform: uppercase; background: var(--badge-bg); color: var(--badge-fg); flex-shrink: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; }
+.dis-tag { font-size: 0.8em; font-weight: 700; padding: 1px 4px; border-radius: 3px; background: rgba(255,255,255,.08); color: var(--dim); flex-shrink: 0; }
+.chip-tag { font-size: 0.8em; font-weight: 600; padding: 1px 4px; border-radius: 3px; background: var(--vscode-keybindingLabel-background, rgba(255,255,255,.08)); color: var(--vscode-keybindingLabel-foreground, var(--text)); border: 1px solid var(--vscode-keybindingLabel-border, var(--border)); cursor: pointer; user-select: none; flex-shrink: 0; }
+.chip-tag:hover { background: var(--hover); border-color: var(--vscode-focusBorder, var(--accent)); }
+.err-tag { font-size: 0.8em; font-weight: 700; padding: 1px 4px; border-radius: 3px; background: var(--vscode-inputValidation-errorBackground, rgba(239,68,68,.15)); color: var(--danger); border: 1px solid var(--vscode-inputValidation-errorBorder, rgba(239,68,68,.4)); flex-shrink: 0; }
+.warn-tag { font-size: 0.8em; font-weight: 700; padding: 1px 4px; border-radius: 3px; background: var(--vscode-inputValidation-warningBackground, rgba(245,158,11,.15)); color: var(--warn); border: 1px solid var(--vscode-inputValidation-warningBorder, rgba(245,158,11,.4)); flex-shrink: 0; }
 
-.quota-row { display: flex; align-items: center; justify-content: space-between; font-size: 10px; gap: 4px; min-width: 0; }
+.quota-row { display: flex; align-items: center; justify-content: space-between; font-size: 0.88em; gap: 4px; min-width: 0; }
 .progress-bg { position: relative; flex: 1; height: 5px; background: rgba(255,255,255,.1); border-radius: 3px; overflow: hidden; min-width: 20px; }
-.progress-fill { height: 100%; width: 100%; transform-origin: 0% 50%; will-change: transform; transition: transform .25s cubic-bezier(0.4, 0, 0.2, 1); background: var(--accent); border-radius: 3px; }
+.progress-fill { height: 100%; width: 100%; transform-origin: 0% 50%; will-change: transform; transition: transform .25s cubic-bezier(0.4, 0, 0.2, 1); background: var(--vscode-progressBar-background, var(--accent)); border-radius: 3px; }
 .progress-fill.warn { background: var(--warn); }
 .progress-fill.err { background: var(--danger); }
-.reset-tag { font-size: 8.5px; font-family: var(--mono); padding: 1px 3px; border-radius: 3px; background: rgba(255,255,255,.06); color: var(--dim); white-space: nowrap; flex-shrink: 0; }
+.reset-tag { font-size: 0.8em; padding: 1px 3px; border-radius: 3px; background: rgba(255,255,255,.06); color: var(--dim); white-space: nowrap; flex-shrink: 0; }
 .reset-tag.active { background: rgba(0,120,212,.2); color: #60a5fa; }
 .reset-tag.not-used { background: transparent; color: var(--dim, #888); opacity: 0.75; }
 
+.card-menu-wrap { position: relative; display: inline-flex; }
+.card-dropdown { position: absolute; right: 0; top: calc(100% + 3px); background: var(--vscode-menu-background, var(--vscode-editorWidget-background, var(--card))); color: var(--vscode-menu-foreground, var(--text)); border: 1px solid var(--vscode-menu-border, var(--vscode-widget-border, var(--border))); border-radius: 4px; box-shadow: 0 4px 14px var(--vscode-widget-shadow, rgba(0,0,0,.45)); z-index: 150; min-width: 130px; padding: 3px; display: none; flex-direction: column; gap: 1px; }
+.card-dropdown.show { display: flex; }
+.card-menu-item { display: flex; align-items: center; gap: 6px; padding: 4px 8px; font-size: 0.88em; border-radius: 3px; color: var(--vscode-menu-foreground, var(--text)); background: transparent; border: none; width: 100%; text-align: left; cursor: pointer; white-space: nowrap; }
+.card-menu-item:hover { background: var(--vscode-menu-selectionBackground, var(--hover)); color: var(--vscode-menu-selectionForeground, var(--text)); }
+.card-menu-item.danger:hover { background: var(--vscode-inputValidation-errorBackground, rgba(239,68,68,.18)); color: var(--vscode-errorForeground, var(--danger)); }
+.card-menu-item svg { flex-shrink: 0; }
+
 .switch { position: relative; display: inline-block; width: 26px; height: 14px; cursor: pointer; flex-shrink: 0; }
 .switch input { opacity: 0; width: 0; height: 0; position: absolute; }
-.slider { position: absolute; inset: 0; background: rgba(255,255,255,.15); border-radius: 10px; transition: .18s; }
-.slider::before { position: absolute; content: ""; height: 8px; width: 8px; left: 3px; bottom: 3px; background: #fff; border-radius: 50%; transition: .18s; }
-.switch input:checked + .slider { background: var(--accent); }
+.slider { position: absolute; inset: 0; background: var(--vscode-input-background, rgba(255,255,255,.15)); border: 1px solid var(--vscode-input-border, transparent); border-radius: 10px; transition: .18s; }
+.slider::before { position: absolute; content: ""; height: 8px; width: 8px; left: 2px; bottom: 2px; background: #fff; border-radius: 50%; transition: .18s; }
+.switch input:checked + .slider { background: var(--accent); border-color: var(--accent); }
 .switch input:checked + .slider::before { transform: translateX(12px); }
 .switch.disabled { opacity: .4; cursor: not-allowed; }
 
@@ -327,53 +441,52 @@ g.bar-group.dimmed { opacity: 0.32; }
 g.bar-group:hover rect { filter: brightness(1.15); }
 
 .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
-.stat-box { background: var(--card); border: 1px solid var(--border); border-radius: 5px; padding: 6px 8px; display: flex; flex-direction: column; gap: 2px; }
-.stat-val { font-size: 13px; font-weight: 700; font-family: var(--mono); color: var(--text); }
-.stat-lbl { font-size: 9px; color: var(--dim); }
+.stat-box { background: var(--card); border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; display: flex; flex-direction: column; gap: 2px; }
+.stat-val { font-size: 1.15em; font-weight: 700; color: var(--text); }
+.stat-lbl { font-size: 0.8em; color: var(--dim); }
 
 .scroll-box { display: flex; flex-direction: column; gap: 5px; max-height: 220px; overflow-y: auto; overflow-x: hidden; padding-right: 1px; contain: content; will-change: scroll-position; }
 .log-scroll { display: flex; flex-direction: column; gap: 5px; max-height: 24vh; overflow-y: auto; overflow-x: hidden; padding-right: 1px; contain: content; will-change: scroll-position; }
-.log-card { background: var(--card); border: 1px solid var(--border); border-radius: 5px; padding: 5px 7px; display: flex; flex-direction: column; gap: 3px; min-width: 0; user-select: text; contain: content; content-visibility: auto; contain-intrinsic-size: 0 42px; }
+.log-card { background: var(--card); border: 1px solid var(--border); border-radius: 4px; padding: 5px 7px; display: flex; flex-direction: column; gap: 3px; min-width: 0; user-select: text; contain: content; content-visibility: auto; contain-intrinsic-size: 0 42px; }
 .log-card * { user-select: text; }
-.log-meta { display: flex; align-items: center; justify-content: space-between; gap: 4px; font-size: 9px; color: var(--dim); }
-.log-msg { font-size: 10px; line-height: 1.4; word-break: normal; overflow-wrap: anywhere; }
+.log-meta { display: flex; align-items: center; justify-content: space-between; gap: 4px; font-size: 0.8em; color: var(--dim); }
+.log-msg { font-size: 0.88em; line-height: 1.4; word-break: normal; overflow-wrap: anywhere; }
 .log-msg.error { color: #f87171; }
 .log-msg.warn { color: #fbbf24; }
 .log-msg.rotate { color: #6ee7b7; }
 
 .chart-scroll-box { width: 100%; overflow-x: auto; overflow-y: hidden; margin-top: 6px; contain: content; will-change: scroll-position; scrollbar-width: thin; -webkit-overflow-scrolling: touch; }
 .chart-scroll-box::-webkit-scrollbar { height: 4px; }
-.chart-scroll-box::-webkit-scrollbar-thumb { background: rgba(255,255,255,.18); border-radius: 2px; }
-.chart-svg { height: 145px; overflow: visible; display: block; }
+.chart-scroll-box::-webkit-scrollbar-thumb { background: var(--vscode-scrollbarSlider-background, rgba(255,255,255,.18)); border-radius: 2px; }
+.chart-svg { height: 145px; overflow: visible; display: block; font-family: var(--font); }
 .h-scroll-box { display: flex; flex-direction: row; gap: 6px; overflow-x: auto; overflow-y: hidden; padding: 2px 1px 6px 1px; scrollbar-width: thin; -webkit-overflow-scrolling: touch; will-change: scroll-position; }
-.square-card { flex: 0 0 168px; width: 168px; background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 7px 8px; display: flex; flex-direction: column; gap: 3px; user-select: text; contain: content; }
+.square-card { flex: 0 0 168px; width: 168px; background: var(--card); border: 1px solid var(--border); border-radius: 5px; padding: 7px 8px; display: flex; flex-direction: column; gap: 3px; user-select: text; contain: content; }
 .square-card .card-title { flex: 0 0 auto; margin: 1px 0 2px 0; }
-.empty { padding: 12px; text-align: center; color: var(--dim); font-size: 10.5px; }
+.empty { padding: 12px; text-align: center; color: var(--dim); font-size: 0.9em; }
 </style></head><body>
 
 <div id="view-home" style="display:flex;flex-direction:column;gap:8px;">
   <div class="row" style="padding-bottom:6px;border-bottom:1px solid var(--border);">
     <div style="display:flex;align-items:center;gap:5px;">
       <span class="badge">OPENAG</span>
-      <span style="font-size:10px;color:var(--dim);">Account Pool</span>
+      <span style="font-size:0.85em;color:var(--dim);">Account Pool</span>
     </div>
     <label class="switch" title="Toggle OpenAG"><input type="checkbox" id="cfg-enabled" data-action="toggleEnabled" checked /><span class="slider"></span></label>
   </div>
 
   <div class="row">
-    <div style="display:flex;align-items:center;gap:4px;">
-      <span style="font-size:9.5px;color:var(--dim);font-weight:600;">Strategy:</span>
-      <select class="sort-select" id="cfg-strategy" data-action="changeStrategy" style="font-size:9.5px;padding:2px 4px;">
-        <option value="auto_highest" title="Auto-Highest: Maximizes quota throughput. Drains imminent reset windows and switches to the highest available quota.">Auto-Highest</option>
-        <option value="cache_optimized" title="Cache Optimized: Maximizes inference cache hits by sticking to the active account until quota drops below 15%, minimizing latency and token consumption.">Cache Optimized</option>
-        <option value="round_robin" title="Round Robin: Cycles through accounts evenly to distribute usage across the entire pool.">Round Robin</option>
-      </select>
-      <span class="info-badge" title="OpenAG Rotation:&#10;&#10;Active Across All Strategies:&#10;• Tier Priority: Always burns Ultra/Pro/Plus accounts before touching Free tier accounts.&#10;• Timing Priority (Drain Window): Holds active account if its 5h window resets in &lt;=30 mins (&gt;5% quota) to consume capacity before refill.&#10;• Reserve Gating: Uses Primary pool until all drop to &lt;=10%, then unlocks Reserve pool.&#10;• Model Affinity: Routes prompts according to active model family (Gemini vs Claude/GPT-OSS).&#10;• 429 Interception: Sub-second auto-rotation on API rate limits.&#10;&#10;Selectable Strategies:&#10;• Auto-Highest: Selects highest quota with +1000 score bonus for &lt;=45m refills.&#10;• Cache Optimized: Holds active account while quota &gt;15% to maintain warm GPU prefix cache.&#10;• Round Robin: Cycles evenly across healthy accounts while respecting tier & timing.">!</span>
+    <div style="display:flex;align-items:center;gap:5px;">
+      <span style="font-size:0.85em;color:var(--dim);font-weight:600;">Strategy:</span>
+      <span class="badge" style="font-size:0.8em;padding:2px 6px;">Auto-Highest</span>
+      <span class="info-badge" title="Strategy: Auto-Highest&#10;Always selects the account with the highest available quota to maximize throughput.&#10;&#10;Pool Roles:&#10;• PRIMARY: Active pool accounts. Rotated automatically based on highest quota.&#10;• RESERVE: Standby backup accounts. OpenAG will NEVER touch Reserve accounts unless ALL Primary accounts are exhausted (&lt;= 10%) or hit an API rate limit (429).&#10;&#10;Rules Enforced:&#10;• Tier Priority: Ultra/Pro/Plus accounts are prioritized over Free tier.&#10;• Drain Window: Holds active account if window resets in &lt;= 30m (&gt; 5% quota).&#10;• Model Affinity: Routes prompts according to assigned model family.&#10;• 429 Intercept: Fast-failover to next healthy account on rate limits.">!</span>
     </div>
+  </div>
+
+  <div class="row" style="margin-top:-2px;">
+    <span id="quota-last-refreshed" style="font-size:0.8em;color:var(--dim);"></span>
     <div class="btn-row">
-      <button class="btn btn-sec" id="btn-refresh-quotas" data-action="refreshQuotas" title="Refresh quotas">
+      <button class="btn btn-sec btn-icon" id="btn-refresh-quotas" data-action="refreshQuotas" title="Refresh quotas">
         <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" clip-rule="evenodd" d="M4.681 3H2V2h3.5l.5.5V6H5V4a5 5 0 1 0 4.53-.761l.302-.954A6 6 0 1 1 4.681 3z"/></svg>
-        <span class="btn-text">Refresh</span>
       </button>
       <button class="btn" data-action="addAccount" title="Add Google Account">
         <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M14 7v1H8v6H7V8H1V7h6V1h1v6h6z"/></svg>
@@ -387,8 +500,8 @@ g.bar-group:hover rect { filter: brightness(1.15); }
       <span>Accounts Pool</span>
     </div>
     <div style="display:flex;align-items:center;gap:4px;">
-      <span id="acc-count" style="font-size:9px;font-family:var(--mono);color:var(--dim);">0 accounts</span>
-      <button class="btn btn-sec btn-icon" data-action="toggleHideEmail" id="btn-hide-email" title="Toggle Hide Email" style="font-size:9px;padding:1px 5px;">Hide Email</button>
+      <span id="acc-count" style="font-size:0.8em;color:var(--dim);">0 accounts</span>
+      <button class="btn btn-sec btn-icon" data-action="toggleHideEmail" id="btn-hide-email" title="Toggle Hide Email" style="font-size:0.8em;padding:1px 5px;">Hide Email</button>
     </div>
   </div>
   <div id="acc-list" style="display:flex;flex-direction:column;gap:5px;"></div>
@@ -399,7 +512,7 @@ g.bar-group:hover rect { filter: brightness(1.15); }
   <div class="sec-head">
     <span>Event Stream</span>
     <div style="display:flex;gap:4px;align-items:center;">
-      <span id="log-count" style="font-size:9px;font-family:var(--mono);color:var(--dim);">0 logs</span>
+      <span id="log-count" style="font-size:0.8em;color:var(--dim);">0 logs</span>
       <button class="btn btn-sec btn-icon" data-action="clearLogs" title="Clear logs">Clear</button>
     </div>
   </div>
@@ -410,14 +523,14 @@ g.bar-group:hover rect { filter: brightness(1.15); }
   <div class="row" style="padding-bottom:6px;border-bottom:1px solid var(--border);">
     <div style="display:flex;align-items:center;gap:5px;">
       <span class="badge">OPENAG</span>
-      <span style="font-size:10px;color:var(--dim);">Token Statistics</span>
+      <span style="font-size:0.85em;color:var(--dim);">Token Statistics</span>
     </div>
     <button class="btn btn-sec" data-action="nav" data-view="home">&larr; Back</button>
   </div>
 
   <div class="sec-head" style="margin-top:0;">
     <span>Time Horizon</span>
-    <button class="btn btn-sec btn-icon" data-action="recalculateStats" title="Recalculate statistics from conversation transcripts">&#x21bb; Sync</button>
+    <button class="btn btn-sec btn-icon" data-action="recalculateStats" title="Recalculate statistics from conversation transcripts">&#x21bb;</button>
   </div>
 
   <div class="segmented-tabs">
@@ -430,7 +543,7 @@ g.bar-group:hover rect { filter: brightness(1.15); }
   <div class="card" style="padding:10px 8px;">
     <div class="card-head" style="flex-wrap:wrap;gap:4px;">
       <span class="card-title" id="chart-title" style="min-width:110px;">Token Consumption</span>
-      <div style="display:flex;gap:7px;font-size:8.5px;flex-shrink:0;margin-left:auto;">
+      <div style="display:flex;gap:7px;font-size:0.75em;flex-shrink:0;margin-left:auto;">
         <span style="display:flex;align-items:center;gap:3px;"><span style="width:7px;height:7px;border-radius:2px;background:var(--cached);"></span>Cache Hit</span>
         <span style="display:flex;align-items:center;gap:3px;"><span style="width:7px;height:7px;border-radius:2px;background:var(--input-col);"></span>New Input</span>
         <span style="display:flex;align-items:center;gap:3px;"><span style="width:7px;height:7px;border-radius:2px;background:var(--thinking-col);"></span>Thinking</span>
@@ -448,7 +561,7 @@ g.bar-group:hover rect { filter: brightness(1.15); }
   <div class="sec-head">
     <span>Usage per Request</span>
     <div style="display:flex;align-items:center;gap:3px;">
-      <span id="req-count" style="font-size:9px;font-family:var(--mono);color:var(--dim);">0 reqs</span>
+      <span id="req-count" style="font-size:0.8em;color:var(--dim);">0 reqs</span>
       <select class="sort-select" id="sort-sel-requests" data-action="changeSortField" data-section="requests">
         <option value="recent" selected>Recent</option>
         <option value="total">Volume</option>
@@ -469,7 +582,7 @@ g.bar-group:hover rect { filter: brightness(1.15); }
       <span class="info-badge" title="This is showing model ID, not the model name">!</span>
     </div>
     <div style="display:flex;align-items:center;gap:3px;">
-      <span id="model-count" style="font-size:9px;font-family:var(--mono);color:var(--dim);">0 models</span>
+      <span id="model-count" style="font-size:0.8em;color:var(--dim);">0 models</span>
       <select class="sort-select" id="sort-sel-models" data-action="changeSortField" data-section="models">
         <option value="total" selected>Volume</option>
         <option value="cachePct">Cache Rate</option>
@@ -486,7 +599,7 @@ g.bar-group:hover rect { filter: brightness(1.15); }
   <div class="sec-head">
     <span>Usage by Session</span>
     <div style="display:flex;align-items:center;gap:3px;">
-      <span id="conv-count" style="font-size:9px;font-family:var(--mono);color:var(--dim);">0 sessions</span>
+      <span id="conv-count" style="font-size:0.8em;color:var(--dim);">0 sessions</span>
       <select class="sort-select" id="sort-sel-conversations" data-action="changeSortField" data-section="conversations">
         <option value="recent" selected>Recent</option>
         <option value="total">Volume</option>
@@ -522,6 +635,15 @@ function esc(s) { return s ? String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;"
 function fmtNum(n) { return typeof n === "number" ? (n >= 1e6 ? (n/1e6).toFixed(2)+"M" : n >= 1e3 ? (n/1e3).toFixed(1)+"k" : n.toLocaleString()) : "0"; }
 function fmtDateTime(ts) { return ts ? new Date(ts).toLocaleString() : ""; }
 
+function getRoleTooltip(role) {
+  var isPrimary = (role || "primary") !== "reserve";
+  if (isPrimary) {
+    return "Pool Role: PRIMARY (Active)\n\n• In the main rotation pool. OpenAG rotates through Primary accounts based on highest available quota.\n• Click to switch to RESERVE.";
+  } else {
+    return "Pool Role: RESERVE (Standby Backup)\n\n• Held in reserve. OpenAG will NEVER rotate to this account unless ALL Primary accounts are exhausted (<= 10%) or rate-limited.\n• Click to switch to PRIMARY.";
+  }
+}
+
 function maskEmail(email, index) {
   if (!email) return "";
   if (!hideEmail) return email;
@@ -550,9 +672,32 @@ function sanitizeTextForDisplay(text) {
 
 document.addEventListener("click", function(e) {
   var target = e.target && e.target.closest ? e.target.closest("[data-action]") : null;
+  if (!target || target.getAttribute("data-action") !== "toggleMenu") {
+    var allDrops = document.querySelectorAll(".card-dropdown.show");
+    for (var di = 0; di < allDrops.length; di++) {
+      allDrops[di].classList.remove("show");
+      var pCard = allDrops[di].closest(".card");
+      if (pCard) pCard.style.zIndex = "";
+    }
+  }
   if (!target) return;
   var action = target.getAttribute("data-action");
-  if (action === "nav") {
+  if (action === "toggleMenu") {
+    var wrap = target.closest(".card-menu-wrap");
+    var drop = wrap ? wrap.querySelector(".card-dropdown") : null;
+    var isOpen = drop && drop.classList.contains("show");
+    var allDrops = document.querySelectorAll(".card-dropdown.show");
+    for (var di = 0; di < allDrops.length; di++) {
+      allDrops[di].classList.remove("show");
+      var cCard = allDrops[di].closest(".card");
+      if (cCard) cCard.style.zIndex = "";
+    }
+    if (drop && !isOpen) {
+      drop.classList.add("show");
+      var parentCard = target.closest(".card");
+      if (parentCard) parentCard.style.zIndex = "50";
+    }
+  } else if (action === "nav") {
     navTo(target.getAttribute("data-view"));
   } else if (action === "range") {
     setStatsRange(target.getAttribute("data-range"));
@@ -623,6 +768,7 @@ document.addEventListener("click", function(e) {
   } else if (action === "refreshQuotas") {
     var rBtn = document.getElementById("btn-refresh-quotas") || target;
     rBtn.classList.add("loading");
+    rBtn.title = "Refreshing...";
     var rTxt = rBtn.querySelector(".btn-text");
     if (rTxt) rTxt.textContent = "Refreshing...";
     var rSvg = rBtn.querySelector("svg");
@@ -764,6 +910,7 @@ function render() {
     var rBtn = document.getElementById("btn-refresh-quotas");
     if (rBtn) {
       rBtn.classList.remove("loading");
+      rBtn.title = "Refresh quotas";
       var rTxt = rBtn.querySelector(".btn-text");
       if (rTxt) rTxt.textContent = "Refresh";
       var rSvg = rBtn.querySelector("svg");
@@ -798,7 +945,7 @@ function makeBarHtml(rowKey, label, pct, resetIso) {
   var hasActiveTimer = (p < 100 && resetIso);
   var rTag = hasActiveTimer
     ? '<span class="reset-tag ' + (resetText !== "ready" ? "active" : "") + '" data-reset="' + esc(resetIso) + '">' + esc(resetText) + '</span>'
-    : '<span class="reset-tag not-used" data-reset="">Not used</span>';
+    : '<span class="reset-tag not-used" data-reset="">Not used yet</span>';
   var scale = (p / 100).toFixed(3);
   return '<div class="quota-row" data-row-key="' + esc(rowKey) + '">' +
     '<div style="display:flex;align-items:center;gap:3px;flex:1;min-width:0;overflow:hidden;">' +
@@ -807,7 +954,7 @@ function makeBarHtml(rowKey, label, pct, resetIso) {
     '</div>' +
     '<div style="display:flex;align-items:center;gap:4px;width:48%;min-width:55px;max-width:110px;flex-shrink:0;">' +
       '<div class="progress-bg"><div class="progress-fill ' + cls + '" style="transform:scaleX(' + scale + ');"></div></div>' +
-      '<span class="pct-text" style="font-family:var(--mono);font-size:9.5px;width:26px;text-align:right;flex-shrink:0;">' + p + '%</span>' +
+      '<span class="pct-text" style="font-size:0.85em;width:26px;text-align:right;flex-shrink:0;">' + p + '%</span>' +
     '</div>' +
   '</div>';
 }
@@ -841,7 +988,7 @@ function updateQuotaRow(rowEl, label, pct, resetIso) {
     } else {
       rTag.style.display = "";
       rTag.className = "reset-tag not-used";
-      rTag.textContent = "Not used";
+      rTag.textContent = "Not used yet";
       rTag.removeAttribute("data-reset");
     }
   }
@@ -890,7 +1037,7 @@ function patchCard(card, acc, idx, quotas, state, hideEmail) {
     if (roleEl.textContent !== roleVal) roleEl.textContent = roleVal;
     roleEl.setAttribute("data-email", email);
     roleEl.setAttribute("data-role", acc.role || "primary");
-    roleEl.title = "Pool Role: " + (acc.role || "primary") + " (click to change)";
+    roleEl.title = getRoleTooltip(acc.role);
   }
 
   var headLeft = card.querySelector(".card-head > div:first-child");
@@ -910,9 +1057,9 @@ function patchCard(card, acc, idx, quotas, state, hideEmail) {
       healthTag.remove();
     }
 
-    var statusTag = headLeft.querySelector(".active-tag, .dis-tag");
-    var desiredTagClass = isAct ? "active-tag" : isDis ? "dis-tag" : "";
-    var desiredTagText = isAct ? "ACTIVE" : isDis ? "OFF" : "";
+    var statusTag = headLeft.querySelector(".dis-tag, .active-tag");
+    var desiredTagClass = isDis ? "dis-tag" : "";
+    var desiredTagText = isDis ? "OFF" : "";
     if (desiredTagClass) {
       if (!statusTag) {
         statusTag = document.createElement("span");
@@ -931,6 +1078,39 @@ function patchCard(card, acc, idx, quotas, state, hideEmail) {
     if (switchInput.checked !== !isDis) {
       switchInput.checked = !isDis;
     }
+  }
+
+  var headRight = card.querySelector(".card-head > div:last-child");
+  if (headRight && !headRight.querySelector(".card-menu-wrap")) {
+    headRight.innerHTML =
+      '<label class="switch" title="' + (isDis ? "Enable in pool" : "Disable in pool") + '">' +
+        '<input type="checkbox" ' + (isDis ? "" : "checked") + ' data-action="toggleAccount" data-email="' + esc(email) + '" />' +
+        '<span class="slider"></span>' +
+      '</label>' +
+      '<div class="card-menu-wrap">' +
+        '<button class="btn btn-sec btn-icon" data-action="toggleMenu" title="More options" style="padding:1px 3px;line-height:1;">' +
+          '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="3" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="8" cy="13" r="1.5"/></svg>' +
+        '</button>' +
+        '<div class="card-dropdown">' +
+          '<button class="card-menu-item" data-action="reauthAccount" data-email="' + esc(email) + '" title="Re-authenticate with Google">' +
+            '<svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" clip-rule="evenodd" d="M11 2a4 4 0 1 0-3.32 6.236L3 13v2h2v-1h1v-1h1v-1h1.764l.236-.236A4 4 0 0 0 11 2zm-2 4a2 2 0 1 1 4 0 2 2 0 0 1-4 0z"/></svg>' +
+            '<span>Re-auth Key</span>' +
+          '</button>' +
+          '<button class="card-menu-item" data-action="refreshAccount" data-email="' + esc(email) + '" title="Refresh quota">' +
+            '<svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" clip-rule="evenodd" d="M4.681 3H2V2h3.5l.5.5V6H5V4a5 5 0 1 0 4.53-.761l.302-.954A6 6 0 1 1 4.681 3z"/></svg>' +
+            '<span>Refresh Quota</span>' +
+          '</button>' +
+          '<button class="card-menu-item danger" data-action="removeAccount" data-email="' + esc(email) + '" title="Remove account">' +
+            '<svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M10 3h3v1h-1v9l-1 1H5l-1-1V4H3V3h3V2l1-1h2l1 1v1zM5 4v9h6V4H5zm2 2h1v5H7V6zm3 0H9v5h1V6z"/></svg>' +
+            '<span>Remove Account</span>' +
+          '</button>' +
+        '</div>' +
+      '</div>';
+  }
+
+  var menuItems = card.querySelectorAll(".card-menu-item[data-email]");
+  for (var mi = 0; mi < menuItems.length; mi++) {
+    menuItems[mi].setAttribute("data-email", email);
   }
 
   var q = (email && quotas[email.toLowerCase()]) || {};
@@ -1011,9 +1191,9 @@ function createCardElement(acc, idx, quotas, state, hideEmail) {
     return html;
   }).join("") + '</div>';
 
-  var tag = isAct ? '<span class="active-tag">ACTIVE</span>' : isDis ? '<span class="dis-tag">OFF</span>' : '';
+  var tag = isDis ? '<span class="dis-tag">OFF</span>' : '';
   var affTag = '<span class="chip-tag" data-action="toggleAffinity" data-email="' + esc(email) + '" data-affinity="' + esc(acc.affinity || "all") + '" title="Model Affinity: ' + esc(acc.affinity || "all") + ' (click to change)">' + esc((acc.affinity || "all").toUpperCase()) + '</span>';
-  var roleTag = '<span class="chip-tag" data-action="toggleRole" data-email="' + esc(email) + '" data-role="' + esc(acc.role || "primary") + '" title="Pool Role: ' + esc(acc.role || "primary") + ' (click to change)">' + esc((acc.role || "primary").toUpperCase()) + '</span>';
+  var roleTag = '<span class="chip-tag" data-action="toggleRole" data-email="' + esc(email) + '" data-role="' + esc(acc.role || "primary") + '" title="' + esc(getRoleTooltip(acc.role)) + '">' + esc((acc.role || "primary").toUpperCase()) + '</span>';
   var healthBadge = (acc.health && acc.health !== "healthy")
     ? ('<span class="err-tag" title="' + esc(acc.healthError || "Token requires re-authentication") + '">' + (acc.health === "expired" ? "EXPIRED" : acc.health === "tos_required" ? "TOS REQ" : "ERROR") + '</span>')
     : "";
@@ -1031,19 +1211,29 @@ function createCardElement(acc, idx, quotas, state, hideEmail) {
       tag +
     '</div>' +
     '<div style="display:flex;align-items:center;gap:3px;flex-shrink:0;">' +
-      '<button class="btn btn-sec btn-icon" data-action="reauthAccount" data-email="' + esc(email) + '" title="Re-authenticate with Google">' +
-        '<svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" clip-rule="evenodd" d="M11 2a4 4 0 1 0-3.32 6.236L3 13v2h2v-1h1v-1h1v-1h1.764l.236-.236A4 4 0 0 0 11 2zm-2 4a2 2 0 1 1 4 0 2 2 0 0 1-4 0z"/></svg>' +
-      '</button>' +
       '<label class="switch" title="' + (isDis ? "Enable in pool" : "Disable in pool") + '">' +
         '<input type="checkbox" ' + (isDis ? "" : "checked") + ' data-action="toggleAccount" data-email="' + esc(email) + '" />' +
         '<span class="slider"></span>' +
       '</label>' +
-      '<button class="btn btn-sec btn-icon" data-action="refreshAccount" data-email="' + esc(email) + '" title="Refresh quota">' +
-        '<svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" clip-rule="evenodd" d="M4.681 3H2V2h3.5l.5.5V6H5V4a5 5 0 1 0 4.53-.761l.302-.954A6 6 0 1 1 4.681 3z"/></svg>' +
-      '</button>' +
-      '<button class="btn btn-sec btn-icon" data-action="removeAccount" data-email="' + esc(email) + '" title="Remove account">' +
-        '<svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M10 3h3v1h-1v9l-1 1H5l-1-1V4H3V3h3V2l1-1h2l1 1v1zM5 4v9h6V4H5zm2 2h1v5H7V6zm3 0H9v5h1V6z"/></svg>' +
-      '</button>' +
+      '<div class="card-menu-wrap">' +
+        '<button class="btn btn-sec btn-icon" data-action="toggleMenu" title="More options" style="padding:1px 3px;line-height:1;">' +
+          '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="3" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="8" cy="13" r="1.5"/></svg>' +
+        '</button>' +
+        '<div class="card-dropdown">' +
+          '<button class="card-menu-item" data-action="reauthAccount" data-email="' + esc(email) + '" title="Re-authenticate with Google">' +
+            '<svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" clip-rule="evenodd" d="M11 2a4 4 0 1 0-3.32 6.236L3 13v2h2v-1h1v-1h1v-1h1.764l.236-.236A4 4 0 0 0 11 2zm-2 4a2 2 0 1 1 4 0 2 2 0 0 1-4 0z"/></svg>' +
+            '<span>Re-auth Key</span>' +
+          '</button>' +
+          '<button class="card-menu-item" data-action="refreshAccount" data-email="' + esc(email) + '" title="Refresh quota">' +
+            '<svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" clip-rule="evenodd" d="M4.681 3H2V2h3.5l.5.5V6H5V4a5 5 0 1 0 4.53-.761l.302-.954A6 6 0 1 1 4.681 3z"/></svg>' +
+            '<span>Refresh Quota</span>' +
+          '</button>' +
+          '<button class="card-menu-item danger" data-action="removeAccount" data-email="' + esc(email) + '" title="Remove account">' +
+            '<svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M10 3h3v1h-1v9l-1 1H5l-1-1V4H3V3h3V2l1-1h2l1 1v1zM5 4v9h6V4H5zm2 2h1v5H7V6zm3 0H9v5h1V6z"/></svg>' +
+            '<span>Remove Account</span>' +
+          '</button>' +
+        '</div>' +
+      '</div>' +
     '</div>' +
   '</div>' +
   qHtml;
@@ -1144,7 +1334,7 @@ function renderAccounts() {
       expandBtn = document.createElement("button");
       expandBtn.className = "btn btn-sec";
       expandBtn.setAttribute("data-action", "toggleExpandAccounts");
-      expandBtn.style.cssText = "width:100%;margin-top:2px;font-size:9.5px;padding:3px 6px;";
+      expandBtn.style.cssText = "width:100%;margin-top:2px;font-size:0.85em;padding:3px 6px;";
       list.appendChild(expandBtn);
     } else {
       list.appendChild(expandBtn);
@@ -1187,9 +1377,9 @@ function renderStatsWidget() {
     '<div class="card-head">' +
       '<div style="display:flex;align-items:center;gap:4px;overflow:hidden;flex:1;min-width:0;">' +
         '<span class="tier-tag">STATS</span>' +
-        '<span style="font-size:10.5px;font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">Today: ' + fmtNum(t.totalTokens || 0) + ' <span style="font-size:9.5px;font-weight:700;color:var(--cached);" title="' + esc(cacHover) + '">(' + pCac + '%)</span></span>' +
+        '<span style="font-size:0.95em;font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">Today: ' + fmtNum(t.totalTokens || 0) + ' <span style="font-size:0.85em;font-weight:700;color:var(--cached);" title="' + esc(cacHover) + '">(' + pCac + '%)</span></span>' +
       '</div>' +
-      '<button class="btn btn-sec" data-action="nav" data-view="stats" style="font-size:9.5px;padding:2px 6px;flex-shrink:0;">Stats &rarr;</button>' +
+      '<button class="btn btn-sec" data-action="nav" data-view="stats" style="font-size:0.85em;padding:2px 6px;flex-shrink:0;">Stats &rarr;</button>' +
     '</div>' +
     '<div class="segmented-bar">' +
       '<div class="seg-cac" style="width:' + pCac + '%;" title="Cache Hit: ' + fmtNum(t.cacheHitTokens || 0) + '"></div>' +
@@ -1201,7 +1391,7 @@ function renderStatsWidget() {
       breakdownHtml +
     '</div>' +
     (s.burnRate && s.burnRate.tokensPerMin > 0
-      ? ('<div class="card-meta" style="margin-top:3px;font-size:8.5px;color:var(--dim);border-top:1px solid var(--border);padding-top:3px;">Burn Rate: <strong style="color:var(--text);font-family:var(--mono);">~' + fmtNum(s.burnRate.tokensPerMin) + '/min</strong> (' + s.burnRate.recentTurns + ' turns in 15m)</div>')
+      ? ('<div class="card-meta" style="margin-top:3px;font-size:0.75em;color:var(--dim);border-top:1px solid var(--border);padding-top:3px;">Burn Rate: <strong style="color:var(--text);">~' + fmtNum(s.burnRate.tokensPerMin) + '/min</strong> (' + s.burnRate.recentTurns + ' turns in 15m)</div>')
       : '') +
   '</div>';
 }
@@ -1339,11 +1529,11 @@ function renderStatsPage(force) {
     var promptCacHover = 'Cache Hit: ' + fmtNum(rangeTotalHit) + ' (' + rangeTotalHit.toLocaleString() + ' tokens)';
     var thkMetricHtml = rangeTotalThk > 0
       ? '<div class="stat-box"><span class="stat-lbl">Thinking Depth</span><span class="stat-val" style="color:var(--thinking-col);">' + fmtNum(rangeTotalThk) + '</span></div>'
-      : '<div class="stat-box"><span class="stat-lbl">Cache Hit Rate</span><span class="stat-val" style="color:var(--cached);">' + fmtNum(rangeTotalHit) + ' <span style="font-size:10px;font-weight:600;color:var(--dim);">(' + rangeHitRate + '%)</span></span></div>';
+      : '<div class="stat-box"><span class="stat-lbl">Cache Hit Rate</span><span class="stat-val" style="color:var(--cached);">' + fmtNum(rangeTotalHit) + ' <span style="font-size:0.75em;font-weight:600;color:var(--dim);">(' + rangeHitRate + '%)</span></span></div>';
 
     allTimeGrid.innerHTML =
       '<div class="stat-box"><span class="stat-lbl">Processed</span><span class="stat-val">' + fmtNum(rangeTotalTokens) + '</span></div>' +
-      '<div class="stat-box" title="' + esc(promptCacHover) + '"><span class="stat-lbl">Prompt Input</span><span class="stat-val" style="color:var(--input-col);">' + fmtNum(rangeTotalInp) + ' <span style="font-size:10px;font-weight:600;color:var(--cached);">(' + rangeHitRate + '%)</span></span></div>' +
+      '<div class="stat-box" title="' + esc(promptCacHover) + '"><span class="stat-lbl">Prompt Input</span><span class="stat-val" style="color:var(--input-col);">' + fmtNum(rangeTotalInp) + ' <span style="font-size:0.75em;font-weight:600;color:var(--cached);">(' + rangeHitRate + '%)</span></span></div>' +
       '<div class="stat-box"><span class="stat-lbl">Completion Output</span><span class="stat-val" style="color:var(--output-col);">' + fmtNum(rangeTotalOut) + '</span></div>' +
       thkMetricHtml;
   }
@@ -1403,7 +1593,7 @@ function renderStatsPage(force) {
   if (reqBreakdownEl) {
     var prevReqScroll = reqBreakdownEl.scrollLeft;
     var filterBanner = activeSlice
-      ? '<div class="row" style="background:var(--card);border:1px solid var(--accent);border-radius:5px;padding:3px 7px;width:100%;margin-bottom:3px;"><span style="font-size:9px;color:var(--text);font-weight:600;">Filtered to ' + esc(selectedBarLabel || "Slice") + '</span><button class="btn btn-sec btn-icon" data-action="clearBarFilter" style="font-size:8.5px;padding:1px 4px;">Clear</button></div>'
+      ? '<div class="row" style="background:var(--card);border:1px solid var(--accent);border-radius:5px;padding:3px 7px;width:100%;margin-bottom:3px;"><span style="font-size:0.8em;color:var(--text);font-weight:600;">Filtered to ' + esc(selectedBarLabel || "Slice") + '</span><button class="btn btn-sec btn-icon" data-action="clearBarFilter" style="font-size:0.75em;padding:1px 4px;">Clear</button></div>'
       : '';
 
     reqBreakdownEl.innerHTML = reqs.length ? (filterBanner + reqs.map(function(r) {
@@ -1425,8 +1615,8 @@ function renderStatsPage(force) {
         '</div>' +
         '<div class="card-title" title="' + esc(r.promptPreview || "") + '">' + esc(r.promptPreview || "User Prompt") + '</div>' +
         '<div style="display:flex;align-items:baseline;justify-content:space-between;margin:1px 0;">' +
-          '<span style="font-size:8px;color:var(--dim);text-transform:uppercase;font-weight:600;">Tokens</span>' +
-          '<span style="font-size:14px;font-weight:700;font-family:var(--mono);color:var(--text);">' + fmtNum(r.totalTokens || 0) + ' <span style="font-size:10px;font-weight:700;color:var(--cached);" title="' + esc(rCacHover) + '">(' + hitRate + '%)</span></span>' +
+          '<span style="font-size:0.7em;color:var(--dim);text-transform:uppercase;font-weight:600;">Tokens</span>' +
+          '<span style="font-size:1.25em;font-weight:700;color:var(--text);font-variant-numeric:tabular-nums;">' + fmtNum(r.totalTokens || 0) + ' <span style="font-size:0.75em;font-weight:700;color:var(--cached);" title="' + esc(rCacHover) + '">(' + hitRate + '%)</span></span>' +
         '</div>' +
         '<div class="card-meta">' + tCount + (tCount === 1 ? " turn" : " turns") + ' &bull; ' + dateStr + (timeStr ? ' ' + timeStr : '') + '</div>' +
         '<div class="card-breakdown" style="' + cbColumns + '">' +
@@ -1501,8 +1691,8 @@ function renderStatsPage(force) {
         '</div>' +
         '<div class="card-title" title="' + esc(m) + '">' + esc(m) + '</div>' +
         '<div style="display:flex;align-items:baseline;justify-content:space-between;margin:1px 0;">' +
-          '<span style="font-size:8px;color:var(--dim);text-transform:uppercase;font-weight:600;">Volume</span>' +
-          '<span style="font-size:14px;font-weight:700;font-family:var(--mono);color:var(--text);">' + fmtNum(b.total) + ' <span style="font-size:10px;font-weight:700;color:var(--cached);" title="' + esc(mCacHover) + '">(' + mHitRate + '%)</span></span>' +
+          '<span style="font-size:0.7em;color:var(--dim);text-transform:uppercase;font-weight:600;">Volume</span>' +
+          '<span style="font-size:1.25em;font-weight:700;color:var(--text);font-variant-numeric:tabular-nums;">' + fmtNum(b.total) + ' <span style="font-size:0.75em;font-weight:700;color:var(--cached);" title="' + esc(mCacHover) + '">(' + mHitRate + '%)</span></span>' +
         '</div>' +
         '<div class="card-breakdown" style="margin-top:2px;' + mCbCols + '">' +
           '<div class="cb-item" title="' + esc(mCacHover) + '"><span class="cb-lbl">In</span><span class="cb-val" style="color:var(--input-col);">' + fmtNum(b.inp) + '</span></div>' +
@@ -1566,8 +1756,8 @@ function renderStatsPage(force) {
         '</div>' +
         '<div class="card-title" title="' + esc(c.title || "") + '">' + esc(c.title || (c.id ? c.id.slice(0,8) : "Session")) + '</div>' +
         '<div style="display:flex;align-items:baseline;justify-content:space-between;margin:1px 0;">' +
-          '<span style="font-size:8px;color:var(--dim);text-transform:uppercase;font-weight:600;">Tokens</span>' +
-          '<span style="font-size:14px;font-weight:700;font-family:var(--mono);color:var(--text);">' + fmtNum(c.totalTokens || 0) + ' <span style="font-size:10px;font-weight:700;color:var(--cached);" title="' + esc(cCacHover) + '">(' + cHitRate + '%)</span></span>' +
+          '<span style="font-size:0.7em;color:var(--dim);text-transform:uppercase;font-weight:600;">Tokens</span>' +
+          '<span style="font-size:1.25em;font-weight:700;color:var(--text);font-variant-numeric:tabular-nums;">' + fmtNum(c.totalTokens || 0) + ' <span style="font-size:0.75em;font-weight:700;color:var(--cached);" title="' + esc(cCacHover) + '">(' + cHitRate + '%)</span></span>' +
         '</div>' +
         '<div class="card-meta">' + cTurns + (cTurns === 1 ? " turn" : " turns") + ' &bull; ' + cDateStr + (cTimeStr ? ' ' + cTimeStr : '') + '</div>' +
         '<div class="card-breakdown" style="' + cCbCols + '">' +
@@ -1676,5 +1866,5 @@ function renderLogs() {
 send("ready");
 render();
 </script></body></html>`;
-  }
+	}
 }

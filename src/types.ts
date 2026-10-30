@@ -80,7 +80,7 @@ export interface AccountQuota {
   cooldownExpiresAt?: number;
 }
 
-export type RotationStrategy = "auto_highest" | "cache_optimized" | "round_robin";
+export type RotationStrategy = "auto_highest";
 
 export interface OpenAGConfig {
   enabled: boolean;

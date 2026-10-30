@@ -98,8 +98,29 @@ export const USSBridge = {
     }
   },
 
+  async syncKeyringOnly(token: OAuthTokens, email?: string): Promise<boolean> {
+    try {
+      const resolvedEmail = email || (await this.getEmailFromToken(token.accessToken));
+      if (!resolvedEmail) {
+        debugLog("[USSBridge] Failed to write keyring: email could not be resolved from token");
+        return false;
+      }
+      const ok = await OSKeyring.writeCredential(resolvedEmail, token);
+      debugLog(`[USSBridge] OS keyring direct write for ${resolvedEmail}: ${ok ? "success" : "failed"}`);
+      return ok;
+    } catch (e: unknown) {
+      debugLog(`[USSBridge] Failed to write OS keyring: ${e instanceof Error ? e.message : String(e)}`);
+      return false;
+    }
+  },
+
   async setOAuthToken(token: OAuthTokens, email?: string): Promise<boolean> {
     try {
+      const resolvedEmail = email || (await this.getEmailFromToken(token.accessToken));
+      if (resolvedEmail) {
+        await OSKeyring.writeCredential(resolvedEmail, token);
+      }
+
       const api = getApi();
       const pref = api?.OAuthPreferences;
       if (!pref?.setOAuthTokenInfo) return false;
@@ -110,11 +131,6 @@ export const USSBridge = {
         tokenType: token.tokenType || "Bearer",
         isGcpTos: token.isGcpTos ?? false,
       });
-
-      const resolvedEmail = email || (await this.getEmailFromToken(token.accessToken));
-      if (resolvedEmail) {
-        await OSKeyring.writeCredential(resolvedEmail, token);
-      }
 
       if (api) {
         try { api.sync?.(); } catch (e: unknown) { debugLog(`[USSBridge] api.sync error: ${e instanceof Error ? e.message : String(e)}`); }

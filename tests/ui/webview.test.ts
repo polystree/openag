@@ -313,7 +313,14 @@ describe("F8: Webview Provider & Reactive Accounts Table", () => {
 
       const html = mockView.webview.html;
       expect(html).toContain(".reset-tag.not-used");
-      expect(html).toContain("Not used");
+      expect(html).toContain("Not used yet");
+      expect(html).toContain("card-menu-wrap");
+      expect(html).toContain("card-dropdown");
+      expect(html).toContain('data-action="toggleMenu"');
+      expect(html).toContain('id="btn-refresh-quotas"');
+      expect(html).toContain("Auto-Highest");
+      expect(html).toContain("Pool Role: PRIMARY");
+      expect(html).toContain("Pool Role: RESERVE");
       expect(html).toContain("argon");
       expect(html).toContain("Gemini 4 Argon");
     });

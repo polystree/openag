@@ -613,52 +613,7 @@ export class TokenManager {
       }
     }
 
-    const strategy: RotationStrategy = this.config.rotationStrategy || "auto_highest";
-
-    // 5. Strategy Dispatch
-    if (strategy === "cache_optimized" && !isRateLimitFailover && !forceSwitch) {
-      // Sticky Cache: Stay on active account as long as it has > 15% quota, matches affinity, and is not free when paid is available
-      if (!activeIsFreeWhenPaidAvailable && activeMatchesAffinity && activeInfo.percent > 15) {
-        return null;
-      }
-    } else if (strategy === "round_robin" && !isRateLimitFailover && !forceSwitch) {
-      // Round Robin with Timing Priority: prioritize imminent refill candidate (<= 45m) if one exists
-      const imminentCandidate = tierCandidates.find((a) => {
-        const qInfo = this.getEffectiveQuota(a.email, quotas, model);
-        const timeToReset = qInfo.resetTs - now;
-        return (
-          timeToReset > 0 &&
-          timeToReset <= IMMINENT_RESET_MS &&
-          qInfo.percent > 10 &&
-          a.email.toLowerCase() !== activeEmail
-        );
-      });
-
-      if (imminentCandidate) {
-        const qInfo = this.getEffectiveQuota(imminentCandidate.email, quotas, model);
-        this.log(
-          `[AutoRotate (Round-Robin Imminent)] Prioritizing imminent refill account ${imminentCandidate.email} (${qInfo.percent}%) from ${this.activeEmail}`,
-        );
-        return this.selectAccount(imminentCandidate.email);
-      }
-
-      const curIdx = tierCandidates.findIndex((a) => a.email.toLowerCase() === activeEmail);
-      for (let offset = 1; offset <= tierCandidates.length; offset++) {
-        const nextIdx = (curIdx + offset) % tierCandidates.length;
-        const candidate = tierCandidates[nextIdx];
-        if (!candidate) continue;
-        const qInfo = this.getEffectiveQuota(candidate.email, quotas, model);
-        if (qInfo.percent > 10 && candidate.email.toLowerCase() !== activeEmail) {
-          this.log(
-            `[AutoRotate (Round-Robin)] Cycling to next account ${candidate.email} (${qInfo.percent}%) from ${this.activeEmail} (${activeInfo.percent}%) [model: ${model}]`,
-          );
-          return this.selectAccount(candidate.email);
-        }
-      }
-      return null;
-    }
-
-    // 6. Candidate Scoring (Auto-Highest & Cache-Optimized low-quota fallback)
+    // 5. Candidate Scoring (Auto-Highest)
     let bestAcc: Account | null = null;
     let bestScore = -1;
     let bestPct = -1;
@@ -853,7 +808,12 @@ export class TokenManager {
       const isAccountSwitch = Boolean(this.lastSyncedEmail && this.lastSyncedEmail.toLowerCase() !== active.email.toLowerCase());
       this.lastSyncedEmail = active.email;
       this.lastSyncedToken = token;
-      await USSBridge.setOAuthToken({
+      // Write directly to OS Keyring (gemini:antigravity).
+      // DO NOT call USSBridge.setOAuthToken / pref.setOAuthTokenInfo:
+      // In Antigravity IDE, onDidChangeOAuthTokenInfo invokes _clearAntigravitySessions(),
+      // which sends SIGTERM to agy.exe. agy.exe already has internal KeyringTokenStorage
+      // watcher (syncWithStoredToken) that hot-reloads tokens directly from the OS keyring.
+      await USSBridge.syncKeyringOnly({
         accessToken: token,
         refreshToken: active.refreshToken || "",
         expiryDateSeconds: active.tokenExpiresAt,
@@ -861,12 +821,13 @@ export class TokenManager {
         isGcpTos: false,
       }, active.email);
 
-      if (isAccountSwitch && this.lsClient) {
-        // Invalidate cached port/process status so subsequent queries refresh without restarting agy.exe.
-        // Never call restartServer() on account switches because agy.exe hosts all active agent sessions
-        // and terminating it aborts active subagents and causes conversational model disconnections.
-        this.lsClient.invalidate();
-        this.log(`[LS] Account credentials updated in-place for ${active.email} without process restart`);
+      if (this.lsClient) {
+        if (isAccountSwitch) {
+          this.lsClient.invalidate();
+        }
+        // Ping GetUserStatus to immediately trigger agy.exe's in-process syncWithStoredToken() hot-reload
+        void this.lsClient.getUserStatus().catch(() => null);
+        this.log(`[Keyring] Account credentials synced in-place to OS keyring for ${active.email} without process restart`);
       }
       void (async () => {
         try {
