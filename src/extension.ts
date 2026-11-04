@@ -1,6 +1,8 @@
 import * as vscode from "vscode";
 import { HookServer } from "./core/hook-server.js";
+import { onHubAccountObserved } from "./core/agy-hub-bridge.js";
 import { LogManager } from "./core/log-manager.js";
+import { ModelSelectionWatcher } from "./core/model-selection-watcher.js";
 import { OAuthFlow } from "./core/oauth-flow.js";
 import { QuotaMonitor } from "./core/quota-monitor.js";
 import { StatsManager } from "./core/stats-manager.js";
@@ -20,6 +22,7 @@ let logManager: LogManager | null = null;
 let usageTracker: UsageTracker | null = null;
 let statsManager: StatsManager | null = null;
 let hookServer: HookServer | null = null;
+let modelWatcher: ModelSelectionWatcher | null = null;
 
 function getLogCategory(msg: string): "ROTATION" | "QUOTA" | "USS" | "AUTH" | "SYSTEM" {
   if (msg.includes("AutoRotate") || msg.includes("ROTATION")) return "ROTATION";
@@ -138,6 +141,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionExports {
 
   hookServer = new HookServer(tokenManager, quotaMonitor, log);
   void hookServer.start();
+  if (HookServer.refreshGlobalHookIfRegistered(context.extensionPath)) log("[HookServer] Updated PreInvocation hook path in ~/.gemini/config/hooks.json");
 
   context.subscriptions.push(
     logManager,
@@ -172,7 +176,9 @@ export function activate(context: vscode.ExtensionContext): ExtensionExports {
     quotaMonitor?.notifyActivity();
     statusBar?.updateContext(ctx);
     if (tokenManager && quotaMonitor) {
-      void tokenManager.autoSelectHighestQuota(quotaMonitor.getAllQuotas(), `model ${ctx.model}`, ctx.model);
+      // The model picked in the chat (what the next message will use) wins over the last model seen in a conversation.
+      const model = tokenManager.getPreferredModel() || ctx.model;
+      void tokenManager.autoSelectHighestQuota(quotaMonitor.getAllQuotas(), "conversation activity", model);
     }
   });
 
@@ -239,6 +245,43 @@ export function activate(context: vscode.ExtensionContext): ExtensionExports {
       log("Activating OpenAG...");
       if (tokenManager) await tokenManager.initialize();
       quotaMonitor?.initialize();
+      // Follow the chat model picker: switch to an account that offers the selected model before the message is sent.
+      modelWatcher = new ModelSelectionWatcher((modelKey) => {
+        if (!tokenManager || !quotaMonitor) return;
+        tokenManager.setPreferredModel(modelKey);
+        const quotas = quotaMonitor.getAllQuotas();
+        const label = Object.values(quotas).flatMap((q) => q.models || []).find((m) => m.modelKey === modelKey)?.displayName || modelKey;
+        log(`[ModelWatch] Chat model selected: ${label}`);
+        void tokenManager.autoSelectHighestQuota(quotas, "chat model selected", modelKey);
+      });
+      modelWatcher.start();
+
+      // The chat panel loads its model picker once (and every 10 min). When the hub moves to an account
+      // with a different model list, reload the webviews so the picker matches the account. Never while an agent turn is running.
+      let hubEmail = "";
+      let hubModelKeys = "";
+      let reloadTimer: ReturnType<typeof setTimeout> | undefined;
+      const AGENT_ACTIVE_MS = 30_000;
+      const reloadPickerWhenIdle = (email: string, attempt = 0) => {
+        if (reloadTimer) clearTimeout(reloadTimer);
+        const sinceHook = Date.now() - HookServer.lastInvocationAt;
+        if (sinceHook < AGENT_ACTIVE_MS && attempt < 60) {
+          reloadTimer = setTimeout(() => reloadPickerWhenIdle(email, attempt + 1), AGENT_ACTIVE_MS - sinceHook + 1000);
+          return;
+        }
+        if (email.toLowerCase() !== hubEmail.toLowerCase()) return;
+        log(`[AgyHub] Reloading the chat panel so its model list matches ${email}`);
+        void vscode.commands.executeCommand("workbench.action.webview.reloadWebviewAction");
+      };
+      onHubAccountObserved((email, models) => {
+        const keys = models.map((m) => m.modelKey).sort().join(",");
+        const first = !hubEmail;
+        const changed = email.toLowerCase() !== hubEmail.toLowerCase();
+        const modelsDiffer = keys !== hubModelKeys;
+        hubEmail = email;
+        hubModelKeys = keys;
+        if (!first && changed && modelsDiffer) reloadPickerWhenIdle(email);
+      });
       const activeAcc = tokenManager?.getActiveAccount();
       const initQuota = activeAcc && quotaMonitor ? quotaMonitor.getQuota(activeAcc.email) : null;
       statusBar?.updateAccount(tokenManager?.getActiveEmail() || "", activeAcc?.tier || "unknown", tokenManager?.isExtensionEnabled() ?? true, initQuota);
@@ -380,8 +423,8 @@ export function activate(context: vscode.ExtensionContext): ExtensionExports {
         if (selected?.isAction && selected.action) {
           selected.action();
         } else if (selected?.email) {
-          await tokenManager.selectAccount(selected.email);
-          void vscode.window.showInformationMessage(`OpenAG: Switched active account to ${selected.email}`);
+          await tokenManager.selectAccountManually(selected.email);
+          void vscode.window.showInformationMessage(`OpenAG: Switched active account to ${selected.email} (strategy: Manual)`);
         }
       } catch (e: unknown) {
         void vscode.window.showErrorMessage(`OpenAG: Quick Status error - ${e instanceof Error ? e.message : String(e)}`);
@@ -410,6 +453,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionExports {
 }
 
 export function deactivate(): void {
+  modelWatcher?.dispose();
   hookServer?.dispose();
   tokenManager?.dispose();
   quotaMonitor?.dispose();

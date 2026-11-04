@@ -15,6 +15,7 @@ type WebviewMessage =
   | { action: "updateAccountMeta"; payload: { email: string; alias?: string; affinity?: import("../types.js").ModelAffinity; role?: import("../types.js").PoolRole } }
   | { action: "reauthAccount"; payload: string }
   | { action: "refreshAccount"; payload: string }
+  | { action: "useAccount"; payload: string }
   | { action: "removeAccount"; payload: string }
   | { action: "clearLogs"; payload?: undefined }
   | { action: "updateConfig"; payload: Partial<OpenAGConfig> }
@@ -168,6 +169,12 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
               } catch (e: unknown) {
                 void vscode.window.showErrorMessage(`OpenAG: Re-auth failed - ${e instanceof Error ? e.message : String(e)}`);
               }
+              this.refresh();
+            }
+            break;
+          case "useAccount":
+            if (message.payload) {
+              await this.tokenManager.selectAccountManually(message.payload);
               this.refresh();
             }
             break;
@@ -345,9 +352,10 @@ g.bar-group:hover rect { filter: brightness(1.15); }
     <div style="display:flex;align-items:center;gap:4px;">
       <span style="font-size:9.5px;color:var(--dim);font-weight:600;">Strategy:</span>
       <select class="sort-select" id="cfg-strategy" data-action="changeStrategy" style="font-size:9.5px;padding:2px 4px;">
-        <option value="auto_highest" title="Auto-Highest: Maximizes quota throughput. Drains imminent reset windows and switches to the highest available quota.">Auto-Highest</option>
+        <option value="auto_highest" title="Auto-Highest: Switches to the account with the highest remaining quota for the selected model.">Auto-Highest</option>
         <option value="cache_optimized" title="Cache Optimized: Maximizes inference cache hits by sticking to the active account until quota drops below 15%, minimizing latency and token consumption.">Cache Optimized</option>
         <option value="round_robin" title="Round Robin: Cycles through accounts evenly to distribute usage across the entire pool.">Round Robin</option>
+        <option value="manual" title="Manual: Keeps the account you picked (Use button). No automatic switching.">Manual</option>
       </select>
       <span class="info-badge" title="OpenAG Rotation:&#10;&#10;Active Across All Strategies:&#10;• Tier Priority: Always burns Ultra/Pro/Plus accounts before touching Free tier accounts.&#10;• Timing Priority (Drain Window): Holds active account if its 5h window resets in &lt;=30 mins (&gt;5% quota) to consume capacity before refill.&#10;• Reserve Gating: Uses Primary pool until all drop to &lt;=10%, then unlocks Reserve pool.&#10;• Model Affinity: Routes prompts according to active model family (Gemini vs Claude/GPT-OSS).&#10;• 429 Interception: Sub-second auto-rotation on API rate limits.&#10;&#10;Selectable Strategies:&#10;• Auto-Highest: Selects highest quota with +1000 score bonus for &lt;=45m refills.&#10;• Cache Optimized: Holds active account while quota &gt;15% to maintain warm GPU prefix cache.&#10;• Round Robin: Cycles evenly across healthy accounts while respecting tier & timing.">!</span>
     </div>
@@ -585,6 +593,8 @@ document.addEventListener("click", function(e) {
     }
   } else if (action === "reauthAccount") {
     send("reauthAccount", target.getAttribute("data-email"));
+  } else if (action === "useAccount") {
+    send("useAccount", target.getAttribute("data-email"));
   } else if (action === "refreshAccount") {
     send("refreshAccount", target.getAttribute("data-email"));
   } else if (action === "removeAccount") {
@@ -807,10 +817,31 @@ function renderAccounts() {
     var fams = (Array.isArray(q.families) && q.families.length) ? q.families : [{ key: "gemini", label: "Gemini", percent: 100 }, { key: "claude", label: "Claude", percent: 100 }];
     var qHtml = '<div style="display:flex;flex-direction:column;gap:3px;">' + fams.map(function(f) {
       if (!f) return "";
-      var html = makeBarHtml((f.label || "Model") + " (5h)", f.limit5h ? f.limit5h.percent : (f.percent || 100), f.limit5h ? f.limit5h.resetTime : f.resetTime);
+      var basePct = typeof f.percent === "number" ? f.percent : 100;
+      var html = makeBarHtml((f.label || "Model") + " (5h)", f.limit5h ? f.limit5h.percent : basePct, f.limit5h ? f.limit5h.resetTime : f.resetTime);
       if (f.limitWeekly) html += makeBarHtml((f.label || "Model") + " (7d)", f.limitWeekly.percent, f.limitWeekly.resetTime);
       return html;
-    }).join("") + '</div>';
+    }).join("");
+    if (Array.isArray(q.models) && q.models.length > 0) {
+      // One chip per model: thinking levels such as (Low)/(Medium)/(High)/(Thinking) share a quota, so merge them.
+      var groups = {};
+      var order = [];
+      q.models.forEach(function(m) {
+        var label = m && (m.displayName || m.name);
+        if (!label) return;
+        var base = label.replace(/[ ]*[(](?:low|medium|high|xhigh|max|minimal|thinking)[)][ ]*$/i, "").trim() || label;
+        var p = typeof m.percent === "number" ? m.percent : 100;
+        if (!(base in groups)) { groups[base] = p; order.push(base); }
+        else groups[base] = Math.min(groups[base], p);
+      });
+      var chips = order.map(function(label) {
+        var p = groups[label];
+        var col = p < 20 ? "var(--danger)" : p < 40 ? "var(--warn)" : "var(--dim)";
+        return '<span style="font-size:8.5px;background:rgba(255,255,255,0.06);padding:1px 5px;border-radius:3px;color:' + col + ';" title="' + esc(label + " (" + p + "% left)") + '">' + esc(label) + ' <b>' + p + '%</b></span>';
+      }).join("");
+      if (chips) qHtml += '<div style="margin-top:4px;padding-top:4px;border-top:1px dashed var(--border);display:flex;flex-wrap:wrap;gap:3px;">' + chips + '</div>';
+    }
+    qHtml += '</div>';
     var tag = isAct ? '<span class="active-tag">ACTIVE</span>' : isDis ? '<span class="dis-tag">OFF</span>' : '';
     var affTag = '<span class="chip-tag" data-action="toggleAffinity" data-email="' + esc(email) + '" data-affinity="' + esc(acc.affinity || "all") + '" title="Model Affinity: ' + esc(acc.affinity || "all") + ' (click to change)">' + esc((acc.affinity || "all").toUpperCase()) + '</span>';
     var roleTag = '<span class="chip-tag" data-action="toggleRole" data-email="' + esc(email) + '" data-role="' + esc(acc.role || "primary") + '" title="Pool Role: ' + esc(acc.role || "primary") + ' (click to change)">' + esc((acc.role || "primary").toUpperCase()) + '</span>';
@@ -832,6 +863,7 @@ function renderAccounts() {
         '</div>' +
         '<div style="display:flex;align-items:center;gap:3px;flex-shrink:0;">' +
           reauthBtn +
+          (!isAct && !isDis ? '<button class="btn btn-sec" style="font-size:9px;padding:1px 6px;" data-action="useAccount" data-email="' + esc(email) + '" title="Make this the active account (switches strategy to Manual)">Use</button>' : "") +
           '<label class="switch" title="' + (isDis ? "Enable in pool" : "Disable in pool") + '">' +
             '<input type="checkbox" ' + (isDis ? "" : "checked") + ' data-action="toggleAccount" data-email="' + esc(email) + '" />' +
             '<span class="slider"></span>' +

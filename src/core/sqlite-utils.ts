@@ -11,8 +11,9 @@ export const NON_IDE_CONV_DIR = path.join(NON_IDE_ROOT, "conversations");
 export const IDE_BRAIN_DIR = path.join(IDE_ROOT, "brain");
 export const IDE_CONV_DIR = path.join(IDE_ROOT, "conversations");
 
-export const BRAIN_DIR = fs.existsSync(IDE_BRAIN_DIR) ? IDE_BRAIN_DIR : NON_IDE_BRAIN_DIR;
-export const CONV_DIR = fs.existsSync(IDE_CONV_DIR) ? IDE_CONV_DIR : NON_IDE_CONV_DIR;
+// The VS Code based IDE runs `agy --hub --app_data_dir=antigravity`, so its data lives in ~/.gemini/antigravity.
+export const BRAIN_DIR = fs.existsSync(NON_IDE_BRAIN_DIR) ? NON_IDE_BRAIN_DIR : IDE_BRAIN_DIR;
+export const CONV_DIR = fs.existsSync(NON_IDE_CONV_DIR) ? NON_IDE_CONV_DIR : IDE_CONV_DIR;
 
 function getWslDirs(): { brain: string[]; conv: string[] } {
   const brain: string[] = [];
@@ -39,24 +40,24 @@ function getWslDirs(): { brain: string[]; conv: string[] } {
 
 export function getBrainDirs(): string[] {
   const dirs: string[] = [];
-  if (fs.existsSync(IDE_BRAIN_DIR)) dirs.push(IDE_BRAIN_DIR);
   if (fs.existsSync(NON_IDE_BRAIN_DIR)) dirs.push(NON_IDE_BRAIN_DIR);
+  if (fs.existsSync(IDE_BRAIN_DIR)) dirs.push(IDE_BRAIN_DIR);
   const wsl = getWslDirs();
   for (const b of wsl.brain) {
     if (!dirs.includes(b)) dirs.push(b);
   }
-  return dirs.length > 0 ? dirs : [IDE_BRAIN_DIR, NON_IDE_BRAIN_DIR];
+  return dirs.length > 0 ? dirs : [NON_IDE_BRAIN_DIR, IDE_BRAIN_DIR];
 }
 
 export function getConvDirs(): string[] {
   const dirs: string[] = [];
-  if (fs.existsSync(IDE_CONV_DIR)) dirs.push(IDE_CONV_DIR);
   if (fs.existsSync(NON_IDE_CONV_DIR)) dirs.push(NON_IDE_CONV_DIR);
+  if (fs.existsSync(IDE_CONV_DIR)) dirs.push(IDE_CONV_DIR);
   const wsl = getWslDirs();
   for (const c of wsl.conv) {
     if (!dirs.includes(c)) dirs.push(c);
   }
-  return dirs.length > 0 ? dirs : [IDE_CONV_DIR, NON_IDE_CONV_DIR];
+  return dirs.length > 0 ? dirs : [NON_IDE_CONV_DIR, IDE_CONV_DIR];
 }
 
 export function resolveConversationDb(convId: string): string | null {

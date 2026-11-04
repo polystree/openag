@@ -8,6 +8,7 @@ import {
   AuthError,
   type EffectiveQuota,
   type ModelAffinity,
+  type ModelQuota,
   type OAuthTokens,
   type OpenAGConfig,
   OpenAGErrorCode,
@@ -18,11 +19,35 @@ import { OAuthFlow } from "./oauth-flow.js";
 import { exportPool, importPool } from "./pool-crypto.js";
 import { FALLBACK_ENDPOINT, PRIMARY_ENDPOINT } from "./quota-monitor.js";
 import type { UsageTracker } from "./usage-tracker.js";
+import { switchHubAccount } from "./agy-hub-bridge.js";
 import { USSBridge } from "./uss-bridge.js";
 
 const KEY_ACCOUNTS = "openag.accounts.v1";
 const KEY_ACTIVE = "openag.active_account.v1";
 const KEY_CONFIG = "openag.config.v1";
+
+function normalizeModelName(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+/** Finds a model by id (e.g. "gemini-3.8-flash-medium") or display name (e.g. "Gemini 3.8 Flash (Medium)"). */
+function findModelQuota(models: ModelQuota[], modelName: string): ModelQuota | undefined {
+  const lower = modelName.toLowerCase();
+  const exact = models.find((m) => m.modelKey?.toLowerCase() === lower || m.name.toLowerCase() === lower || m.displayName?.toLowerCase() === lower);
+  if (exact) return exact;
+  const norm = normalizeModelName(modelName);
+  if (!norm) return undefined;
+  return models.find((m) => normalizeModelName(m.name) === norm || (m.displayName && normalizeModelName(m.displayName) === norm));
+}
+
+/** Turns an IDE model key (e.g. "MODEL_PLACEHOLDER_M418") into a readable name using any account's model list. */
+function resolveModelLabel(quotas: Record<string, AccountQuota>, modelName: string): string {
+  for (const q of Object.values(quotas)) {
+    const m = q?.models?.length ? findModelQuota(q.models, modelName) : undefined;
+    if (m) return m.displayName || m.name;
+  }
+  return modelName;
+}
 
 function resolveModelFamily(modelName?: string): "gemini" | "claude" | "other" {
   if (!modelName) return "other";
@@ -45,6 +70,7 @@ function resolveModelFamily(modelName?: string): "gemini" | "claude" | "other" {
 
 const DRAIN_WINDOW_MS = 30 * 60 * 1000;
 const IMMINENT_RESET_MS = 45 * 60 * 1000;
+const SWITCH_MARGIN = 5;
 
 function matchesModelAffinity(account: Account, modelFamily: "gemini" | "claude" | "other"): boolean {
   if (!account.affinity || account.affinity === "all" || modelFamily === "other") return true;
@@ -60,6 +86,18 @@ export class TokenManager {
   private readonly onAccountChangeEmitter = new vscode.EventEmitter<void>();
   public readonly onAccountChange = this.onAccountChangeEmitter.event;
   private lastSyncedToken: string | null = null;
+  /** Model currently selected in the chat model picker (IDE model key, e.g. "MODEL_PLACEHOLDER_M418"). */
+  private preferredModel = "";
+  /** Last rotationStrategy value seen in (or written to) VS Code settings. */
+  private lastSettingsStrategy: RotationStrategy | undefined;
+
+  public setPreferredModel(modelKey: string): void {
+    this.preferredModel = modelKey;
+  }
+
+  public getPreferredModel(): string {
+    return this.preferredModel;
+  }
   private lastSyncedEmail: string | null = null;
   private selectAccountLock: Promise<void> = Promise.resolve();
 
@@ -144,9 +182,15 @@ export class TokenManager {
         this.config.hideEmail = hideEmail;
         changed = true;
       }
-      if (rotationStrategy && rotationStrategy !== this.config.rotationStrategy) {
-        this.config.rotationStrategy = rotationStrategy;
-        changed = true;
+      // Only follow settings.json when its value itself changed; a stale value must not undo a change made in the panel.
+      const validStrategy = rotationStrategy && ["auto_highest", "cache_optimized", "round_robin", "manual"].includes(rotationStrategy);
+      if (validStrategy && rotationStrategy !== this.lastSettingsStrategy) {
+        this.lastSettingsStrategy = rotationStrategy;
+        if (rotationStrategy !== this.config.rotationStrategy) {
+          this.log(`[Config] Rotation strategy from settings: ${this.config.rotationStrategy || "auto_highest"} -> ${rotationStrategy}`);
+          this.config.rotationStrategy = rotationStrategy;
+          changed = true;
+        }
       }
       if (typeof endpointOverride === "string" && endpointOverride !== (this.config.endpointOverride || "")) {
         this.config.endpointOverride = endpointOverride;
@@ -166,6 +210,10 @@ export class TokenManager {
   }
 
   public async updateConfig(newConfig: Partial<OpenAGConfig>): Promise<void> {
+    if (newConfig.rotationStrategy && newConfig.rotationStrategy !== this.config.rotationStrategy) {
+      this.log(`[Config] Rotation strategy: ${this.config.rotationStrategy || "auto_highest"} -> ${newConfig.rotationStrategy}`);
+    }
+    if (newConfig.rotationStrategy) this.lastSettingsStrategy = newConfig.rotationStrategy;
     this.config = { ...this.config, ...newConfig };
     await this.context.globalState.update(KEY_CONFIG, this.config);
     if (vscode.workspace?.getConfiguration) {
@@ -173,7 +221,8 @@ export class TokenManager {
         const wsCfg = vscode.workspace.getConfiguration("openag");
         for (const [k, v] of Object.entries(newConfig)) {
           if (v !== undefined) {
-            await wsCfg.update(k, v, vscode.ConfigurationTarget.Global);
+            await Promise.resolve(wsCfg.update(k, v, vscode.ConfigurationTarget.Global)).catch((err: unknown) =>
+              this.log(`[Config] Could not save openag.${k} to settings: ${err instanceof Error ? err.message : String(err)}`));
           }
         }
       } catch {
@@ -212,13 +261,14 @@ export class TokenManager {
 
   public async updateAccountMeta(
     email: string,
-    meta: { alias?: string; affinity?: ModelAffinity; role?: PoolRole },
+    meta: { alias?: string; affinity?: ModelAffinity; role?: PoolRole; projectId?: string },
   ): Promise<Account | null> {
     const acc = this.accounts.find((a) => a.email.toLowerCase() === email.toLowerCase());
     if (!acc) return null;
     if (meta.alias !== undefined) acc.alias = meta.alias;
     if (meta.affinity !== undefined) acc.affinity = meta.affinity;
     if (meta.role !== undefined) acc.role = meta.role;
+    if (meta.projectId !== undefined) acc.projectId = meta.projectId;
     acc.updatedAt = Date.now();
     await this.persist();
     this.onAccountChangeEmitter.fire();
@@ -305,6 +355,18 @@ export class TokenManager {
     }
   }
 
+  /** User picked an account by hand: switch to it and stop automatic rotation so the choice sticks. */
+  public async selectAccountManually(email: string): Promise<Account | null> {
+    const acc = await this.selectAccount(email);
+    if (acc && (this.config.rotationStrategy || "auto_highest") !== "manual") {
+      await this.updateConfig({ rotationStrategy: "manual" });
+      this.log(`[Manual] ${acc.email} selected by hand; strategy set to Manual (choose another strategy to resume automatic rotation)`);
+    } else if (acc) {
+      this.log(`[Manual] ${acc.email} selected by hand`);
+    }
+    return acc;
+  }
+
   public async selectAccount(email: string): Promise<Account | null> {
     const prevLock = this.selectAccountLock;
     let resolveLock!: () => void;
@@ -330,18 +392,22 @@ export class TokenManager {
     const q = quotas[email.toLowerCase()];
     if (!q?.families || q.families.length === 0) return { percent: -1, resetTs: Infinity };
 
-    const modelName = targetModel || this.usageTracker?.getActiveModel() || "";
+    const modelName = targetModel || this.preferredModel || this.usageTracker?.getActiveModel() || "";
     if (modelName) {
       if (q.models && q.models.length > 0) {
-        const lowerModel = modelName.toLowerCase();
-        const directModel = q.models.find((m) => m.name.toLowerCase() === lowerModel);
+        const directModel = findModelQuota(q.models, modelName);
         if (directModel) {
           const resetTs = directModel.resetTime ? Date.parse(directModel.resetTime) : Infinity;
           return { percent: directModel.percent, resetTs: Number.isNaN(resetTs) ? Infinity : resetTs };
         }
+        // The model exists on another account but not on this one (e.g. a trial model): this account cannot serve it.
+        const offeredElsewhere = Object.entries(quotas).some(
+          ([key, other]) => key !== email.toLowerCase() && other.models?.length > 0 && findModelQuota(other.models, modelName),
+        );
+        if (offeredElsewhere) return { percent: 0, resetTs: Infinity };
       }
 
-      const famKey = resolveModelFamily(modelName);
+      const famKey = resolveModelFamily(resolveModelLabel(quotas, modelName));
       if (famKey !== "other") {
         const fam = q.families.find((f) => f.key === famKey);
         if (fam) {
@@ -377,11 +443,13 @@ export class TokenManager {
     targetModel?: string,
   ): Promise<Account | null> {
     if (!this.isExtensionEnabled() || !this.isRotationEnabled() || this.accounts.length <= 1) return null;
+    // Manual: the user picked the account (e.g. for Claude 5.5 or Argon); never move away from it automatically.
+    if ((this.config.rotationStrategy || "auto_highest") === "manual") return null;
     const available = this.accounts.filter((a) => a.status !== "disabled");
     if (available.length <= 1) return null;
 
-    const model = targetModel || this.usageTracker?.getActiveModel() || "Gemini 3.7 Flash High";
-    const famKey = resolveModelFamily(model);
+    const model = targetModel || this.preferredModel || this.usageTracker?.getActiveModel() || "Gemini 3.7 Flash High";
+    const famKey = resolveModelFamily(resolveModelLabel(quotas, model));
     const now = Date.now();
     const activeEmail = this.activeEmail.toLowerCase();
     const activeAcc = this.getActiveAccount();
@@ -405,9 +473,14 @@ export class TokenManager {
     const activeMatchesAffinity = activeAcc ? matchesModelAffinity(activeAcc, famKey) : true;
     const activeIsFreeWhenPaidAvailable = activeAcc?.tier === "free" && hasUsablePaid;
 
+    const strategy: RotationStrategy = this.config.rotationStrategy || "auto_highest";
+    // Auto-Highest means exactly that: pick the highest remaining quota, without timing tricks.
+    const useTimingPriority = strategy !== "auto_highest";
+
     // 4. Timing Priority (Predictive Drain Window): Keep active account if it resets soon (<= 30 mins) with usable quota (> 5%)
-    // This invariant applies universally across ALL strategies to eliminate wasted quota before refill
+    // Applies to the timing-aware strategies (cache_optimized, round_robin) to use up quota before it refills.
     if (
+      useTimingPriority &&
       !isRateLimitFailover &&
       !activeIsFreeWhenPaidAvailable &&
       activeMatchesAffinity &&
@@ -417,8 +490,6 @@ export class TokenManager {
     ) {
       return null;
     }
-
-    const strategy: RotationStrategy = this.config.rotationStrategy || "auto_highest";
 
     // 5. Strategy Dispatch
     if (strategy === "cache_optimized" && !isRateLimitFailover) {
@@ -465,7 +536,7 @@ export class TokenManager {
       if (info.percent <= 0) continue;
 
       const timeToReset = info.resetTs - now;
-      const isImminent = timeToReset > 0 && timeToReset <= IMMINENT_RESET_MS && info.percent > 10;
+      const isImminent = useTimingPriority && timeToReset > 0 && timeToReset <= IMMINENT_RESET_MS && info.percent > 10;
       const tierBonus = acc.tier === "ultra" ? 20 : acc.tier === "pro" ? 10 : 0;
       const score = info.percent + (isImminent ? 1000 : 0) + tierBonus;
 
@@ -478,7 +549,7 @@ export class TokenManager {
     }
 
     const activeTimeToReset = activeInfo.resetTs - now;
-    const isActiveImminent = activeTimeToReset > 0 && activeTimeToReset <= IMMINENT_RESET_MS && activeInfo.percent > 10;
+    const isActiveImminent = useTimingPriority && activeTimeToReset > 0 && activeTimeToReset <= IMMINENT_RESET_MS && activeInfo.percent > 10;
     const activeTierBonus = activeAcc?.tier === "ultra" ? 20 : activeAcc?.tier === "pro" ? 10 : 0;
     const activeScore = activeMatchesAffinity && !activeIsFreeWhenPaidAvailable ? activeInfo.percent + (isActiveImminent ? 1000 : 0) + activeTierBonus : -1;
 
@@ -486,12 +557,14 @@ export class TokenManager {
       !bestAcc ||
       bestPct <= 0 ||
       bestAcc.email.toLowerCase() === activeEmail ||
-      (!isRateLimitFailover && bestScore <= activeScore)
+      (!isRateLimitFailover && bestScore <= activeScore) ||
+      // Avoid flip-flopping (and losing prompt cache) over a few percent while the active account is still usable.
+      (!isRateLimitFailover && activeScore > 0 && activeInfo.percent > 10 && bestScore - activeScore < SWITCH_MARGIN)
     ) {
       return null;
     }
 
-    this.log(`[AutoRotate] Switching to highest-quota account ${bestAcc.email} (${bestPct}%) from ${this.activeEmail} (${activeInfo.percent}%) [model: ${model}, reason: ${reason || "auto"}]`);
+    this.log(`[AutoRotate] Switching to highest-quota account ${bestAcc.email} (${bestPct}%) from ${this.activeEmail} (${activeInfo.percent}%) [model: ${resolveModelLabel(quotas, model)}, reason: ${reason || "auto"}]`);
     return this.selectAccount(bestAcc.email);
   }
 
@@ -615,6 +688,15 @@ export class TokenManager {
         tokenType: "Bearer",
         isGcpTos: false,
       });
+      // New VS Code based IDE: the chat runs in the agy hub, which reads the OS keyring, not USS.
+      try {
+        await switchHubAccount(
+          { email: active.email, accessToken: token, refreshToken: active.refreshToken || "", expiresAt: active.tokenExpiresAt },
+          (m) => this.log(m),
+        );
+      } catch (hubErr: unknown) {
+        this.log(`[AgyHub] Sync failed: ${hubErr instanceof Error ? hubErr.message : String(hubErr)}`);
+      }
       void (async () => {
         try {
           const override = this.config.endpointOverride?.trim();
