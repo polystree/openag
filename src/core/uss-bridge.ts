@@ -108,6 +108,9 @@ export const USSBridge = {
         }
       }
 
+      // Older IDE builds had these refresh commands; the VS Code based IDE does not, so only call the ones that exist.
+      let registered: Set<string> | null = null;
+      try { registered = new Set(await vscode.commands.getCommands(true)); } catch { /* ignore */ }
       for (const cmd of [
         "antigravity.refreshAuth",
         "antigravity.refreshStatus",
@@ -115,7 +118,8 @@ export const USSBridge = {
         "antigravity.getUserStatus",
         "jetski.refresh",
       ]) {
-        try { void vscode.commands.executeCommand(cmd); } catch { /* ignore */ }
+        if (registered && !registered.has(cmd)) continue;
+        try { void Promise.resolve(vscode.commands.executeCommand(cmd)).catch(() => undefined); } catch { /* ignore */ }
       }
       return true;
     } catch {

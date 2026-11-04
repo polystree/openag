@@ -72,12 +72,14 @@
           "enum": [
             "auto_highest",
             "cache_optimized",
-            "round_robin"
+            "round_robin",
+            "manual"
           ],
           "enumDescriptions": [
-            "Always pick the account with the highest available quota",
+            "Always pick the account with the highest remaining quota for the selected model",
             "Stay on the active account until its quota drops below 15% to preserve prompt cache hits",
-            "Cycle sequentially through healthy accounts"
+            "Cycle sequentially through healthy accounts",
+            "Keep the account you picked by hand; no automatic switching"
           ],
           "default": "auto_highest",
           "description": "Account rotation strategy."

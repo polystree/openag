@@ -2,12 +2,27 @@ import type * as vscode from "vscode";
 import type { Account, AccountQuota, AccountTier, FamilyQuota, ModelQuota, QuotaLimitInfo } from "../types.js";
 import type { TokenManager } from "./token-manager.js";
 import type { UsageTracker } from "./usage-tracker.js";
+import { type HubModelConfig, observeHubs, onHubAccountObserved } from "./agy-hub-bridge.js";
 
-export const PRIMARY_ENDPOINT = "https://daily-cloudcode-pa.googleapis.com";
-export const FALLBACK_ENDPOINT = "https://cloudcode-pa.googleapis.com";
+export const PRIMARY_ENDPOINT = "https://cloudcode-pa.googleapis.com";
+export const FALLBACK_ENDPOINT = "https://daily-cloudcode-pa.googleapis.com";
 const CODE_ASSIST_BODY = JSON.stringify({ metadata: { ideType: "ANTIGRAVITY", ideVersion: "2.5.5" } });
 const FIVE_HOURS = 5 * 60 * 60 * 1000;
 const KEY_QUOTA_CACHE = "openag.quota_cache.v1";
+const KEY_HUB_MODELS = "openag.hub_models.v1";
+
+interface AvailableModelsResponse {
+  models?: Record<string, { displayName?: string; model?: string; maxTokens?: number; quotaInfo?: { remainingFraction?: number; resetTime?: string } }>;
+}
+
+/**
+ * Google omits remainingFraction when it is 0 (proto3 default), so a missing value next to a
+ * resetTime means the quota is used up. Only a value with no reset info at all is treated as full.
+ */
+function remainingPercent(fraction: number | undefined, resetTime: string | undefined): number {
+  if (typeof fraction === "number") return Math.round(fraction * 100);
+  return resetTime ? 0 : 100;
+}
 
 interface QuotaBucket {
   bucketId?: string;
@@ -79,8 +94,57 @@ export class QuotaMonitor {
         }
       }
     }
+    if (this.context) {
+      const hubCached = this.context.globalState.get<Record<string, ModelQuota[]>>(KEY_HUB_MODELS, {});
+      for (const [email, models] of Object.entries(hubCached || {})) {
+        if (Array.isArray(models)) this.hubModels.set(email.toLowerCase(), models);
+      }
+    }
+    onHubAccountObserved((email, models) => this.recordHubModels(email, models));
     this.cleanupExpiredQuotas();
     this.cleanupTimer = setInterval(() => this.cleanupExpiredQuotas(), 3600000);
+  }
+
+  /** Per-account chat model list as the agy hub served it (last time the hub ran on that account). */
+  private hubModels = new Map<string, ModelQuota[]>();
+
+  /** Stores the hub's model list for an account and merges it into that account's quota. */
+  public recordHubModels(email: string, configs: HubModelConfig[]): void {
+    const models: ModelQuota[] = configs.map((c) => ({
+      name: c.label,
+      displayName: c.label,
+      modelKey: c.modelKey,
+      family: this.categorizeFamily(c.label),
+      percent: remainingPercent(c.remainingFraction, c.resetTime),
+      resetTime: c.resetTime,
+    }));
+    const key = email.toLowerCase();
+    this.hubModels.set(key, models);
+    if (this.context) void this.context.globalState.update(KEY_HUB_MODELS, Object.fromEntries(this.hubModels));
+    const quota = this.quotas.get(key);
+    if (quota) {
+      quota.models = this.mergeHubModels(key, quota.models || []);
+      this.quotas.set(key, quota);
+      if (this.context) void this.context.globalState.update(KEY_QUOTA_CACHE, this.getAllQuotas());
+      this.onQuotaUpdate?.(quota);
+    }
+  }
+
+  /** Adds hub-only models (e.g. Argon) to the fresh API list; fresh API data wins for models present in both. */
+  private mergeHubModels(email: string, models: ModelQuota[]): ModelQuota[] {
+    const hub = this.hubModels.get(email);
+    if (!hub || hub.length === 0) return models;
+    const merged = models.map((m) => {
+      if (m.modelKey) return m;
+      const h = hub.find((x) => x.displayName && m.displayName && x.displayName.toLowerCase() === m.displayName.toLowerCase());
+      return h ? { ...m, modelKey: h.modelKey } : m;
+    });
+    for (const h of hub) {
+      if (!merged.some((m) => (m.modelKey && m.modelKey === h.modelKey) || (m.displayName || m.name).toLowerCase() === h.name.toLowerCase())) {
+        merged.push(h);
+      }
+    }
+    return merged;
   }
 
   public initialize(): void {
@@ -169,7 +233,7 @@ export class QuotaMonitor {
     if (!this.tokenManager.isExtensionEnabled()) return null;
     try {
       const accessToken = await this.tokenManager.getValidAccessToken(account);
-      await this.discoverModels(accessToken);
+      const available = await this.discoverModels(accessToken);
       const tier = await this.detectTier(account, accessToken);
       if (account.tier !== tier) {
         await this.tokenManager.updateAccountTier(account.email, tier);
@@ -198,12 +262,14 @@ export class QuotaMonitor {
 
         for (const grp of data.groups) {
           const name = grp.displayName || "";
+          // Trial/preview groups such as Argon have their own quota; per-model data below covers them.
+          if (name.toLowerCase().includes("argon")) continue;
           const isClaude = this.categorizeFamily(name) === "claude";
           const buckets = grp.buckets || [];
 
           for (const b of buckets) {
             const bId = (b.bucketId || "").toLowerCase();
-            const pct = Math.round((b.remainingFraction ?? 1) * 100);
+            const pct = remainingPercent(b.remainingFraction, b.resetTime);
             const is5h = bId.includes("5h") || bId.includes("hourly") || (b.window || "").includes("5h");
             const isWk = bId.includes("weekly") || (b.window || "").includes("week");
 
@@ -237,7 +303,7 @@ export class QuotaMonitor {
         ];
       } else if (data.models && Object.keys(data.models).length > 0) {
         for (const [name, info] of Object.entries(data.models)) {
-          const pct = Math.round((info.quotaInfo?.remainingFraction ?? 1) * 100);
+          const pct = remainingPercent(info.quotaInfo?.remainingFraction, info.quotaInfo?.resetTime);
           models.push({ name, family: this.categorizeFamily(name), percent: pct, resetTime: info.quotaInfo?.resetTime });
         }
         families = this.extractFamilyQuotas(models);
@@ -248,7 +314,24 @@ export class QuotaMonitor {
         ];
       }
 
-      const quota: AccountQuota = { email: account.email, tier, families, models, lastUpdated: Date.now() };
+      // Per-account model list (each account can have different models, e.g. trials).
+      if (available?.models && models.length === 0) {
+        const seen = new Set<string>();
+        for (const [id, info] of Object.entries(available.models)) {
+          if (!info.displayName || seen.has(id)) continue;
+          seen.add(id);
+          models.push({
+            name: id,
+            displayName: info.displayName,
+            modelKey: info.model,
+            family: this.categorizeFamily(info.displayName || id),
+            percent: remainingPercent(info.quotaInfo?.remainingFraction, info.quotaInfo?.resetTime),
+            resetTime: info.quotaInfo?.resetTime,
+          });
+        }
+      }
+
+      const quota: AccountQuota = { email: account.email, tier, families, models: this.mergeHubModels(account.email.toLowerCase(), models), lastUpdated: Date.now() };
       this.quotas.set(account.email.toLowerCase(), quota);
       if (this.context) {
         void this.context.globalState.update(KEY_QUOTA_CACHE, this.getAllQuotas());
@@ -336,21 +419,24 @@ export class QuotaMonitor {
     }
   }
 
-  private async discoverModels(accessToken: string): Promise<void> {
-    if (this.modelsDiscovered) return;
+  private async discoverModels(accessToken: string): Promise<AvailableModelsResponse | null> {
     try {
       const res = await this.postCloudCode(
         "/v1internal:fetchAvailableModels",
         accessToken,
         JSON.stringify({}),
       );
-      if (!res.ok) return;
+      if (!res.ok) return null;
       // SAFETY: Available models endpoint response structure
-      const data = (await res.json()) as { models?: Record<string, { maxTokens?: number }> };
-      if (data.models) this.usageTracker?.registerModelMetadata(data.models);
-      this.modelsDiscovered = true;
+      const data = (await res.json()) as AvailableModelsResponse;
+      if (data.models && !this.modelsDiscovered) {
+        this.usageTracker?.registerModelMetadata(data.models);
+        this.modelsDiscovered = true;
+      }
+      return data;
     } catch (e: unknown) {
       this.log(`Model discovery skipped: ${e instanceof Error ? e.message : String(e)}`);
+      return null;
     }
   }
 
@@ -363,7 +449,11 @@ export class QuotaMonitor {
       );
       if (!res.ok) return account.tier || "pro";
       // SAFETY: Code assist subscription tier response payload
-      const data = (await res.json()) as { paidTier?: { id?: string; name?: string }; tierId?: string; currentTier?: { id?: string; name?: string } };
+      const data = (await res.json()) as { paidTier?: { id?: string; name?: string }; tierId?: string; currentTier?: { id?: string; name?: string }; cloudaicompanionProject?: string };
+      if (data.cloudaicompanionProject && account.projectId !== data.cloudaicompanionProject) {
+        account.projectId = data.cloudaicompanionProject;
+        await this.tokenManager.updateAccountMeta(account.email, { projectId: data.cloudaicompanionProject });
+      }
       const raw = (data.paidTier?.id || data.paidTier?.name || data.tierId || data.currentTier?.id || data.currentTier?.name || "").toLowerCase();
       if (raw.includes("ultra")) return "ultra";
       if (raw.includes("pro") || raw.includes("advanced") || raw.includes("standard")) return "pro";
@@ -378,7 +468,7 @@ export class QuotaMonitor {
 
   private checkAutoRotation(email: string): void {
     if (!this.tokenManager.isExtensionEnabled() || !this.tokenManager.isRotationEnabled()) return;
-    const model = this.usageTracker?.getActiveModel();
+    const model = this.tokenManager.getPreferredModel() || this.usageTracker?.getActiveModel();
     void this.tokenManager.autoSelectHighestQuota(this.getAllQuotas(), `quota update on ${email}`, model);
   }
 
@@ -386,13 +476,16 @@ export class QuotaMonitor {
     if (!this.tokenManager.isExtensionEnabled()) return;
     const active = this.tokenManager.getActiveAccount();
     if (active) await this.fetchAccountQuota(active);
+    // Refresh the hub's view (real model list incl. trials) for whatever account it is on.
+    await observeHubs().catch(() => undefined);
   }
 
   public async pollAllAccounts(): Promise<void> {
     const accounts = this.tokenManager.getAccounts().filter((acc) => acc.status !== "disabled");
     await runWithConcurrency(accounts, 4, (acc) => this.fetchAccountQuota(acc, true));
+    await observeHubs().catch(() => undefined);
     if (this.tokenManager.isExtensionEnabled() && this.tokenManager.isRotationEnabled()) {
-      const model = this.usageTracker?.getActiveModel();
+      const model = this.tokenManager.getPreferredModel() || this.usageTracker?.getActiveModel();
       void this.tokenManager.autoSelectHighestQuota(this.getAllQuotas(), "poll all accounts completion", model);
     }
   }

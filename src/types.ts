@@ -49,7 +49,11 @@ export interface DecryptedPoolData {
 }
 
 export interface ModelQuota {
+  /** Model id as the IDE/hook reports it, e.g. "gemini-3.8-flash-medium" */
   name: string;
+  displayName?: string;
+  /** Model enum the IDE uses, e.g. "MODEL_PLACEHOLDER_M319" (stored as the chat's selected model) */
+  modelKey?: string;
   family: "gemini" | "claude" | "other";
   percent: number;
   resetTime?: string;
@@ -77,7 +81,7 @@ export interface AccountQuota {
   lastUpdated: number;
 }
 
-export type RotationStrategy = "auto_highest" | "cache_optimized" | "round_robin";
+export type RotationStrategy = "auto_highest" | "cache_optimized" | "round_robin" | "manual";
 
 export interface OpenAGConfig {
   enabled: boolean;
