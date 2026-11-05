@@ -88,6 +88,7 @@ export class HookServer {
                 this.quotaMonitor.getAllQuotas(),
                 "PreInvocation Hook",
                 targetModel,
+                { ignoreThrottle: true },
               );
 
               const activeEmail = this.tokenManager.getActiveEmail();
@@ -207,7 +208,9 @@ export class HookServer {
         updatedAt: Date.now(),
         sessions,
       };
-      fs.writeFileSync(ipcFile, JSON.stringify(descriptor, null, 2), "utf8");
+      const tempFile = `${ipcFile}.${process.pid}.${Date.now()}.tmp`;
+      fs.writeFileSync(tempFile, JSON.stringify(descriptor, null, 2), "utf8");
+      fs.renameSync(tempFile, ipcFile);
       this.log(`[HookServer] Wrote IPC discovery descriptor to ${ipcFile} (active sessions: ${sessions.length})`);
     } catch (err: unknown) {
       this.log(`[HookServer] Failed to write IPC discovery descriptor: ${err instanceof Error ? err.message : String(err)}`);
@@ -241,7 +244,9 @@ export class HookServer {
           updatedAt: primary.updatedAt,
           sessions,
         };
-        fs.writeFileSync(ipcFile, JSON.stringify(updatedDescriptor, null, 2), "utf8");
+        const tempFile = `${ipcFile}.${process.pid}.${Date.now()}.tmp`;
+        fs.writeFileSync(tempFile, JSON.stringify(updatedDescriptor, null, 2), "utf8");
+        fs.renameSync(tempFile, ipcFile);
         this.log(`[HookServer] De-registered session PID ${process.pid}; active sessions remaining: ${sessions.length}`);
       }
     } catch (err: unknown) {

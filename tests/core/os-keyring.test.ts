@@ -306,5 +306,54 @@ describe("F7 & F10: OS Keyring Integration & Secret Safety", () => {
         spawnSpy.mockRestore();
       }
     });
+
+    it("T2.4: serializes concurrent writeCredential calls through writeLock without overlapping process execution", async () => {
+      let activeWrites = 0;
+      let maxConcurrent = 0;
+      const spawnSpy = spyOn(childProcess, "spawn").mockImplementation(() => {
+        activeWrites++;
+        if (activeWrites > maxConcurrent) maxConcurrent = activeWrites;
+        const mockChild: any = {
+          stdin: {
+            on: () => {},
+            write: () => {},
+            end: () => {},
+          },
+          on: (event: string, cb: any) => {
+            if (event === "close") {
+              setTimeout(() => {
+                activeWrites--;
+                cb(0);
+              }, 20);
+            }
+          },
+        };
+        return mockChild;
+      });
+
+      try {
+        const p1 = OSKeyring.writeCredential("user1@gmail.com", {
+          accessToken: "tok-1",
+          refreshToken: "ref-1",
+          expiryDateSeconds: 1000,
+        });
+        const p2 = OSKeyring.writeCredential("user2@gmail.com", {
+          accessToken: "tok-2",
+          refreshToken: "ref-2",
+          expiryDateSeconds: 1000,
+        });
+        const p3 = OSKeyring.writeCredential("user3@gmail.com", {
+          accessToken: "tok-3",
+          refreshToken: "ref-3",
+          expiryDateSeconds: 1000,
+        });
+
+        const results = await Promise.all([p1, p2, p3]);
+        expect(results).toEqual([true, true, true]);
+        expect(maxConcurrent).toBe(1);
+      } finally {
+        spawnSpy.mockRestore();
+      }
+    });
   });
 });

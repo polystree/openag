@@ -21,14 +21,12 @@ export function normalizePath(p: string): string {
 
   let norm = p.replace(/\\/g, "/").toLowerCase().trim();
 
-  // Strip known URI schemes
   norm = norm.replace(/^(?:vscode-remote|file):\/\//, "");
 
   // Strip WSL or remote authorities (e.g. wsl+ubuntu/, wsl%2bubuntu/, wsl$/, wsl.localhost/, ssh-remote+.../)
   norm = norm.replace(/^(?:wsl\+|wsl%2b|ssh-remote\+|dev-container\+)[^/]+\//, "");
   norm = norm.replace(/^(?:wsl\$|wsl\.localhost)\/[^/]+\//, "");
 
-  // Strip leading and trailing slashes
   norm = norm.replace(/^\/+/, "").replace(/\/+$/, "");
 
   return norm;

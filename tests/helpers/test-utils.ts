@@ -28,7 +28,7 @@ export function createTestAccount(overrides: Partial<Account> = {}): Account {
 }
 
 export function createFamilyQuota(
-  key: "gemini" | "claude" | "argon",
+  key: "gemini" | "claude" | string,
   percent: number,
   limit5hPercent?: number,
   limit5hResetTime?: string,
@@ -37,7 +37,7 @@ export function createFamilyQuota(
 ): FamilyQuota {
   return {
     key,
-    label: key === "gemini" ? "Gemini Models" : key === "claude" ? "Claude Models" : "Gemini 4 Argon",
+    label: key === "gemini" ? "Gemini" : key === "claude" ? "Claude" : key,
     percent,
     resetTime: limit5hResetTime,
     limit5h: {
@@ -87,7 +87,6 @@ export async function setupTestTokenManager(options: {
   if (options.config) {
     initialGlobalState["openag.config.v1"] = {
       enabled: true,
-      rotationStrategy: "auto_highest",
       ...options.config,
     };
   }

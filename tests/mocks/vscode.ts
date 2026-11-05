@@ -332,7 +332,6 @@ export function createMockExtensionContext(options: MockExtensionContextOptions 
 
 let activeConfigValues: Record<string, any> = {
   "openag.enabled": true,
-  "openag.rotationStrategy": "auto_highest",
   "openag.hideEmail": false,
   "openag.pollIntervalSeconds": 60,
   "openag.endpointOverride": "",
@@ -346,7 +345,6 @@ const statusBarItems: MockStatusBarItem[] = [];
 export function resetMockVscodeState(): void {
   activeConfigValues = {
     "openag.enabled": true,
-    "openag.rotationStrategy": "auto_highest",
     "openag.hideEmail": false,
     "openag.pollIntervalSeconds": 60,
     "openag.endpointOverride": "",

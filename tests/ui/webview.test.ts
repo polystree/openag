@@ -295,7 +295,7 @@ describe("F8: Webview Provider & Reactive Accounts Table", () => {
       expect(mockView.webview.postedMessages.length).toBe(beforeCount + 1);
     });
 
-    it("T2.6: HTML includes 'Not used' styling and supports Gemini 4 Argon quota family", async () => {
+    it("T2.6: HTML includes 'Not used' styling and card menu actions", async () => {
       const { tokenManager, context } = await setupTestTokenManager();
       const { quotaMonitor } = setupTestQuotaMonitor(tokenManager, context);
       const logManager = new LogManager(context as any);
@@ -318,11 +318,15 @@ describe("F8: Webview Provider & Reactive Accounts Table", () => {
       expect(html).toContain("card-dropdown");
       expect(html).toContain('data-action="toggleMenu"');
       expect(html).toContain('id="btn-refresh-quotas"');
-      expect(html).toContain("Auto-Highest");
+      expect(html).not.toContain("Strategy:");
       expect(html).toContain("Pool Role: PRIMARY");
       expect(html).toContain("Pool Role: RESERVE");
-      expect(html).toContain("argon");
-      expect(html).toContain("Gemini 4 Argon");
+      expect(html).toContain('id="cfg-hysteresis"');
+      expect(html).toContain('class="range-slider"');
+      expect(html).toContain('id="cfg-hysteresis-val"');
+      expect(html).toContain("Rotation Threshold");
+      expect(html).toContain('data-action="changeHysteresis"');
+      expect(html).toContain("Switch Threshold (Hysteresis Delta)");
     });
   });
 });

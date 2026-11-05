@@ -299,8 +299,8 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
   --badge-fg: var(--vscode-badge-foreground, #ffffff);
 
   /* Workbench Typography Hooked Directly to Antigravity IDE Settings */
-  --font: var(--vscode-font-family, system-ui, -apple-system, sans-serif);
-  --font-weight: var(--vscode-font-weight, 400);
+  --font: var(--vscode-font-family, "Segoe WPC", "Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, Roboto, sans-serif);
+  --font-weight: var(--vscode-font-weight, normal);
   --font-size: var(--vscode-font-size, 13px);
 
   /* Editor Monospace Typography Hooked Directly to Antigravity IDE Editor */
@@ -331,7 +331,7 @@ button, input, select, textarea { font-family: inherit; font-weight: inherit; fo
 body {
   font-family: var(--font);
   font-weight: var(--font-weight);
-  font-size: calc(var(--font-size) * 0.88);
+  font-size: var(--font-size);
   line-height: 1.4;
   background: var(--bg);
   color: var(--text);
@@ -340,8 +340,6 @@ body {
   flex-direction: column;
   gap: 8px;
   overflow-x: hidden;
-  -webkit-font-smoothing: antialiased;
-  text-rendering: optimizeLegibility;
 }
 
 a:focus-visible,
@@ -361,14 +359,14 @@ code, pre, .log-line, .mono {
 }
 
 .row { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-width: 0; }
-.badge { background: var(--badge-bg); color: var(--badge-fg); font-weight: 700; font-size: 0.85em; padding: 2px 6px; border-radius: 3px; flex-shrink: 0; }
-.info-badge { display: inline-flex; align-items: center; justify-content: center; width: 13px; height: 13px; border-radius: 50%; background: rgba(255,255,255,.1); color: var(--dim); font-size: 0.8em; font-weight: 700; cursor: help; user-select: none; border: 1px solid var(--border); transition: background .12s, color .12s; }
+.badge { background: var(--badge-bg); color: var(--badge-fg); font-weight: 600; font-size: 0.85em; padding: 2px 6px; border-radius: 3px; flex-shrink: 0; }
+.info-badge { display: inline-flex; align-items: center; justify-content: center; width: 13px; height: 13px; border-radius: 50%; background: rgba(255,255,255,.1); color: var(--dim); font-size: 0.8em; font-weight: 600; cursor: help; user-select: none; border: 1px solid var(--border); transition: background .12s, color .12s; }
 .info-badge:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
-.sec-head { font-size: 0.88em; font-weight: 600; color: var(--vscode-sideBarSectionHeader-foreground, var(--dim)); margin-top: 2px; display: flex; align-items: center; justify-content: space-between; }
+.sec-head { font-size: 0.85em; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; color: var(--vscode-sideBarSectionHeader-foreground, var(--dim)); margin-top: 2px; display: flex; align-items: center; justify-content: space-between; }
 
 .btn-row { display: flex; gap: 4px; align-items: center; justify-content: flex-end; flex-shrink: 0; }
-.btn-row .btn { height: 22px; box-sizing: border-box; }
-.btn-row .btn-icon { width: 22px; height: 22px; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
+.btn-row .btn { height: 22px; box-sizing: border-box; padding: 0 8px; }
+.btn-row .btn-icon { width: 22px; height: 22px; min-width: 22px; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
 .btn { display: inline-flex; align-items: center; justify-content: center; gap: 4px; background: var(--vscode-button-background, var(--accent)); color: var(--vscode-button-foreground, #fff); border: 1px solid var(--vscode-button-border, transparent); border-radius: 3px; padding: 3px 8px; font-size: 0.9em; font-weight: 500; cursor: pointer; white-space: nowrap; flex-shrink: 0; }
 .btn:hover { background: var(--vscode-button-hoverBackground, var(--accent-h)); }
 .btn-sec { background: var(--vscode-button-secondaryBackground, rgba(255,255,255,.08)); color: var(--vscode-button-secondaryForeground, var(--text)); border: 1px solid var(--vscode-button-border, var(--border)); }
@@ -382,28 +380,27 @@ code, pre, .log-line, .mono {
 .sort-select:focus { border-color: var(--vscode-focusBorder); }
 
 .segmented-tabs { display: flex; background: var(--card); border: 1px solid var(--border); border-radius: 4px; padding: 2px; gap: 2px; width: 100%; }
-.tab-btn { flex: 1; min-width: 0; padding: 3px 2px; font-size: 0.88em; font-weight: 600; background: transparent; color: var(--dim); border: none; border-radius: 3px; cursor: pointer; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: background .12s, color .12s; }
+.tab-btn { flex: 1; min-width: 0; padding: 3px 2px; font-size: 0.88em; font-weight: 500; background: transparent; color: var(--dim); border: none; border-radius: 3px; cursor: pointer; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: background .12s, color .12s; }
 .tab-btn:hover { color: var(--text); background: var(--hover); }
-.tab-btn.active { background: var(--accent); color: var(--vscode-button-foreground, #fff); }
+.tab-btn.active { background: var(--accent); color: var(--vscode-button-foreground, #fff); font-weight: 600; }
 
 .card { background: var(--card); border: 1px solid var(--border); border-radius: 5px; padding: 6px 8px; display: flex; flex-direction: column; gap: 5px; min-width: 0; position: relative; }
 .card.active { border-color: var(--vscode-focusBorder, var(--accent)); box-shadow: 0 0 0 1px var(--vscode-focusBorder, var(--accent)); }
 .card-head { display: flex; align-items: center; justify-content: space-between; gap: 4px; min-width: 0; }
-.card-title { font-size: 0.98em; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; user-select: text; }
+.card-title { font-size: 0.95em; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; user-select: text; }
 .card-head .card-title { flex: 1; }
 
 .card-meta { font-size: 0.82em; color: var(--dim); display: flex; align-items: center; gap: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: -1px; }
 .card-breakdown { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px; background: transparent; border: none; padding: 0; margin-top: 1px; }
 .cb-item { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-.cb-lbl { font-size: 0.75em; color: var(--dim); text-transform: uppercase; font-weight: 600; letter-spacing: 0.3px; }
-.cb-val { font-size: 0.95em; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cb-lbl { font-size: 0.78em; color: var(--dim); text-transform: uppercase; font-weight: 500; letter-spacing: 0.3px; }
+.cb-val { font-size: 0.92em; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-.tier-tag { font-size: 0.8em; font-weight: 700; padding: 1px 4px; border-radius: 3px; text-transform: uppercase; background: var(--badge-bg); color: var(--badge-fg); flex-shrink: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; }
-.dis-tag { font-size: 0.8em; font-weight: 700; padding: 1px 4px; border-radius: 3px; background: rgba(255,255,255,.08); color: var(--dim); flex-shrink: 0; }
+.tier-tag { font-size: 0.8em; font-weight: 600; padding: 1px 4px; border-radius: 3px; text-transform: uppercase; background: var(--badge-bg); color: var(--badge-fg); flex-shrink: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; }
+.dis-tag { font-size: 0.8em; font-weight: 600; padding: 1px 4px; border-radius: 3px; background: rgba(255,255,255,.08); color: var(--dim); flex-shrink: 0; }
 .chip-tag { font-size: 0.8em; font-weight: 600; padding: 1px 4px; border-radius: 3px; background: var(--vscode-keybindingLabel-background, rgba(255,255,255,.08)); color: var(--vscode-keybindingLabel-foreground, var(--text)); border: 1px solid var(--vscode-keybindingLabel-border, var(--border)); cursor: pointer; user-select: none; flex-shrink: 0; }
 .chip-tag:hover { background: var(--hover); border-color: var(--vscode-focusBorder, var(--accent)); }
-.err-tag { font-size: 0.8em; font-weight: 700; padding: 1px 4px; border-radius: 3px; background: var(--vscode-inputValidation-errorBackground, rgba(239,68,68,.15)); color: var(--danger); border: 1px solid var(--vscode-inputValidation-errorBorder, rgba(239,68,68,.4)); flex-shrink: 0; }
-.warn-tag { font-size: 0.8em; font-weight: 700; padding: 1px 4px; border-radius: 3px; background: var(--vscode-inputValidation-warningBackground, rgba(245,158,11,.15)); color: var(--warn); border: 1px solid var(--vscode-inputValidation-warningBorder, rgba(245,158,11,.4)); flex-shrink: 0; }
+.err-tag { font-size: 0.8em; font-weight: 600; padding: 1px 4px; border-radius: 3px; background: var(--vscode-inputValidation-errorBackground, rgba(239,68,68,.15)); color: var(--danger); border: 1px solid var(--vscode-inputValidation-errorBorder, rgba(239,68,68,.4)); flex-shrink: 0; }
 
 .quota-row { display: flex; align-items: center; justify-content: space-between; font-size: 0.88em; gap: 4px; min-width: 0; }
 .progress-bg { position: relative; flex: 1; height: 5px; background: rgba(255,255,255,.1); border-radius: 3px; overflow: hidden; min-width: 20px; }
@@ -430,6 +427,12 @@ code, pre, .log-line, .mono {
 .switch input:checked + .slider::before { transform: translateX(12px); }
 .switch.disabled { opacity: .4; cursor: not-allowed; }
 
+.range-slider { -webkit-appearance: none; appearance: none; width: 100%; height: 6px; border-radius: 3px; background: var(--vscode-scrollbarSlider-background, rgba(255,255,255,.15)); outline: none; cursor: pointer; margin: 4px 0; }
+.range-slider::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 14px; height: 14px; border-radius: 50%; background: var(--accent); border: 2px solid var(--card); box-shadow: 0 1px 3px rgba(0,0,0,.35); cursor: pointer; transition: transform .1s, background-color .1s; }
+.range-slider::-webkit-slider-thumb:hover { transform: scale(1.15); background: var(--accent-h); }
+.range-slider::-moz-range-thumb { width: 14px; height: 14px; border-radius: 50%; background: var(--accent); border: 2px solid var(--card); box-shadow: 0 1px 3px rgba(0,0,0,.35); cursor: pointer; transition: transform .1s, background-color .1s; }
+.range-slider::-moz-range-thumb:hover { transform: scale(1.15); background: var(--accent-h); }
+
 .segmented-bar { display: flex; width: 100%; height: 6px; border-radius: 3px; overflow: hidden; background: rgba(255,255,255,.08); }
 .seg-inp { background: var(--input-col); height: 100%; transition: width .3s; }
 .seg-out { background: var(--output-col); height: 100%; transition: width .3s; }
@@ -442,10 +445,9 @@ g.bar-group:hover rect { filter: brightness(1.15); }
 
 .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
 .stat-box { background: var(--card); border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; display: flex; flex-direction: column; gap: 2px; }
-.stat-val { font-size: 1.15em; font-weight: 700; color: var(--text); }
-.stat-lbl { font-size: 0.8em; color: var(--dim); }
+.stat-val { font-size: 1.1em; font-weight: 600; color: var(--text); }
+.stat-lbl { font-size: 0.8em; font-weight: 500; color: var(--dim); }
 
-.scroll-box { display: flex; flex-direction: column; gap: 5px; max-height: 220px; overflow-y: auto; overflow-x: hidden; padding-right: 1px; contain: content; will-change: scroll-position; }
 .log-scroll { display: flex; flex-direction: column; gap: 5px; max-height: 24vh; overflow-y: auto; overflow-x: hidden; padding-right: 1px; contain: content; will-change: scroll-position; }
 .log-card { background: var(--card); border: 1px solid var(--border); border-radius: 4px; padding: 5px 7px; display: flex; flex-direction: column; gap: 3px; min-width: 0; user-select: text; contain: content; content-visibility: auto; contain-intrinsic-size: 0 42px; }
 .log-card * { user-select: text; }
@@ -459,6 +461,7 @@ g.bar-group:hover rect { filter: brightness(1.15); }
 .chart-scroll-box::-webkit-scrollbar { height: 4px; }
 .chart-scroll-box::-webkit-scrollbar-thumb { background: var(--vscode-scrollbarSlider-background, rgba(255,255,255,.18)); border-radius: 2px; }
 .chart-svg { height: 145px; overflow: visible; display: block; font-family: var(--font); }
+.chart-svg text { font-family: var(--font); }
 .h-scroll-box { display: flex; flex-direction: row; gap: 6px; overflow-x: auto; overflow-y: hidden; padding: 2px 1px 6px 1px; scrollbar-width: thin; -webkit-overflow-scrolling: touch; will-change: scroll-position; }
 .square-card { flex: 0 0 168px; width: 168px; background: var(--card); border: 1px solid var(--border); border-radius: 5px; padding: 7px 8px; display: flex; flex-direction: column; gap: 3px; user-select: text; contain: content; }
 .square-card .card-title { flex: 0 0 auto; margin: 1px 0 2px 0; }
@@ -472,14 +475,6 @@ g.bar-group:hover rect { filter: brightness(1.15); }
       <span style="font-size:0.85em;color:var(--dim);">Account Pool</span>
     </div>
     <label class="switch" title="Toggle OpenAG"><input type="checkbox" id="cfg-enabled" data-action="toggleEnabled" checked /><span class="slider"></span></label>
-  </div>
-
-  <div class="row">
-    <div style="display:flex;align-items:center;gap:5px;">
-      <span style="font-size:0.85em;color:var(--dim);font-weight:600;">Strategy:</span>
-      <span class="badge" style="font-size:0.8em;padding:2px 6px;">Auto-Highest</span>
-      <span class="info-badge" title="Strategy: Auto-Highest&#10;Always selects the account with the highest available quota to maximize throughput.&#10;&#10;Pool Roles:&#10;• PRIMARY: Active pool accounts. Rotated automatically based on highest quota.&#10;• RESERVE: Standby backup accounts. OpenAG will NEVER touch Reserve accounts unless ALL Primary accounts are exhausted (&lt;= 10%) or hit an API rate limit (429).&#10;&#10;Rules Enforced:&#10;• Tier Priority: Ultra/Pro/Plus accounts are prioritized over Free tier.&#10;• Drain Window: Holds active account if window resets in &lt;= 30m (&gt; 5% quota).&#10;• Model Affinity: Routes prompts according to assigned model family.&#10;• 429 Intercept: Fast-failover to next healthy account on rate limits.">!</span>
-    </div>
   </div>
 
   <div class="row" style="margin-top:-2px;">
@@ -505,6 +500,22 @@ g.bar-group:hover rect { filter: brightness(1.15); }
     </div>
   </div>
   <div id="acc-list" style="display:flex;flex-direction:column;gap:5px;"></div>
+
+  <div class="sec-head">
+    <div style="display:flex;align-items:center;gap:5px;">
+      <span>Rotation Threshold</span>
+      <span class="info-badge" title="Switch Threshold (Hysteresis Delta): Minimum quota advantage required before switching accounts. At 5%, OpenAG switches to another account if its quota is at least 5% higher than the current account. Set to 0% for instant switching on any quota lead. Default: 5%.">?</span>
+    </div>
+    <span id="cfg-hysteresis-val" style="font-size:0.9em;font-weight:600;color:var(--text);font-variant-numeric:tabular-nums;">5%</span>
+  </div>
+  <div class="card" style="padding:8px 10px;display:flex;flex-direction:column;gap:5px;">
+    <input type="range" class="range-slider" id="cfg-hysteresis" data-action="changeHysteresis" min="0" max="25" step="1" value="5" title="Switch Threshold (Hysteresis Delta): Minimum quota advantage required before switching accounts." />
+    <div style="display:flex;justify-content:space-between;font-size:0.75em;color:var(--dim);">
+      <span>0% (Instant)</span>
+      <span>5% (Balanced)</span>
+      <span>25% (Conservative)</span>
+    </div>
+  </div>
 
   <div class="sec-head">Token Usage Statistics</div>
   <div id="stats-widget"></div>
@@ -631,16 +642,16 @@ var sortConfig = {
 };
 
 function send(action, payload) { vscode.postMessage({ action: action, payload: payload }); }
-function esc(s) { return s ? String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;") : ""; }
+function esc(s) { return s ? String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;") : ""; }
 function fmtNum(n) { return typeof n === "number" ? (n >= 1e6 ? (n/1e6).toFixed(2)+"M" : n >= 1e3 ? (n/1e3).toFixed(1)+"k" : n.toLocaleString()) : "0"; }
 function fmtDateTime(ts) { return ts ? new Date(ts).toLocaleString() : ""; }
 
 function getRoleTooltip(role) {
   var isPrimary = (role || "primary") !== "reserve";
   if (isPrimary) {
-    return "Pool Role: PRIMARY (Active)\n\n• In the main rotation pool. OpenAG rotates through Primary accounts based on highest available quota.\n• Click to switch to RESERVE.";
+    return "Pool Role: PRIMARY (Active)\\n\\n• In the main rotation pool. OpenAG rotates through Primary accounts based on highest available quota.\\n• Click to switch to RESERVE.";
   } else {
-    return "Pool Role: RESERVE (Standby Backup)\n\n• Held in reserve. OpenAG will NEVER rotate to this account unless ALL Primary accounts are exhausted (<= 10%) or rate-limited.\n• Click to switch to PRIMARY.";
+    return "Pool Role: RESERVE (Standby Backup)\\n\\n• Held in reserve. OpenAG will NEVER rotate to this account unless ALL Primary accounts are exhausted (<= 10%) or rate-limited.\\n• Click to switch to PRIMARY.";
   }
 }
 
@@ -739,7 +750,7 @@ document.addEventListener("click", function(e) {
   } else if (action === "toggleAffinity") {
     var affEmail = target.getAttribute("data-email");
     var curAff = target.getAttribute("data-affinity") || "all";
-    var nextAff = curAff === "all" ? "claude" : curAff === "claude" ? "gemini" : curAff === "gemini" ? "argon" : "all";
+    var nextAff = curAff === "all" ? "claude" : curAff === "claude" ? "gemini" : "all";
     send("updateAccountMeta", { email: affEmail, affinity: nextAff });
   } else if (action === "toggleRole") {
     var roleEmail = target.getAttribute("data-email");
@@ -769,8 +780,6 @@ document.addEventListener("click", function(e) {
     var rBtn = document.getElementById("btn-refresh-quotas") || target;
     rBtn.classList.add("loading");
     rBtn.title = "Refreshing...";
-    var rTxt = rBtn.querySelector(".btn-text");
-    if (rTxt) rTxt.textContent = "Refreshing...";
     var rSvg = rBtn.querySelector("svg");
     if (rSvg) rSvg.classList.add("spin");
     setTimeout(function() { scheduleRender(); }, 12000);
@@ -796,8 +805,26 @@ document.addEventListener("change", function(e) {
     send("toggleAccount", { email: target.getAttribute("data-email"), enabled: target.checked });
   } else if (action === "toggleEnabled") {
     send("updateConfig", { enabled: target.checked });
-  } else if (action === "changeStrategy") {
-    send("updateConfig", { rotationStrategy: target.value });
+  } else if (action === "changeHysteresis") {
+    var val = parseInt(target.value, 10);
+    if (!isNaN(val)) {
+      var valEl = document.getElementById("cfg-hysteresis-val");
+      if (valEl) valEl.textContent = val + "%";
+      send("updateConfig", { hysteresisDelta: val });
+    }
+  }
+});
+
+document.addEventListener("input", function(e) {
+  var target = e.target;
+  if (!target) return;
+  var action = target.getAttribute("data-action");
+  if (action === "changeHysteresis") {
+    var val = parseInt(target.value, 10);
+    if (!isNaN(val)) {
+      var valEl = document.getElementById("cfg-hysteresis-val");
+      if (valEl) valEl.textContent = val + "%";
+    }
   }
 });
 
@@ -896,9 +923,14 @@ function render() {
       if (cfgEnabled) {
         cfgEnabled.checked = state.config.enabled !== false;
       }
-      var cfgStrat = document.getElementById("cfg-strategy");
-      if (cfgStrat) {
-        cfgStrat.value = state.config.rotationStrategy || "auto_highest";
+      var cfgHysteresis = document.getElementById("cfg-hysteresis");
+      var cfgHysteresisVal = document.getElementById("cfg-hysteresis-val");
+      var currentDelta = typeof state.config.hysteresisDelta === "number" ? state.config.hysteresisDelta : 5;
+      if (cfgHysteresis) {
+        cfgHysteresis.value = String(currentDelta);
+      }
+      if (cfgHysteresisVal) {
+        cfgHysteresisVal.textContent = currentDelta + "%";
       }
       if (typeof state.config.hideEmail === "boolean") {
         hideEmail = state.config.hideEmail;
@@ -911,8 +943,6 @@ function render() {
     if (rBtn) {
       rBtn.classList.remove("loading");
       rBtn.title = "Refresh quotas";
-      var rTxt = rBtn.querySelector(".btn-text");
-      if (rTxt) rTxt.textContent = "Refresh";
       var rSvg = rBtn.querySelector("svg");
       if (rSvg) rSvg.classList.remove("spin");
     }
@@ -1057,7 +1087,7 @@ function patchCard(card, acc, idx, quotas, state, hideEmail) {
       healthTag.remove();
     }
 
-    var statusTag = headLeft.querySelector(".dis-tag, .active-tag");
+    var statusTag = headLeft.querySelector(".dis-tag");
     var desiredTagClass = isDis ? "dis-tag" : "";
     var desiredTagText = isDis ? "OFF" : "";
     if (desiredTagClass) {
@@ -1116,10 +1146,7 @@ function patchCard(card, acc, idx, quotas, state, hideEmail) {
   var q = (email && quotas[email.toLowerCase()]) || {};
   var fams = (Array.isArray(q.families) && q.families.length)
     ? q.families.slice()
-    : [{ key: "gemini", label: "Gemini", percent: 100 }, { key: "claude", label: "Claude", percent: 100 }, { key: "argon", label: "Gemini 4 Argon", percent: 100 }];
-  if (!fams.some(function(f) { return f && f.key === "argon"; })) {
-    fams.push({ key: "argon", label: "Gemini 4 Argon", percent: 100 });
-  }
+    : [{ key: "gemini", label: "Gemini", percent: 100 }, { key: "claude", label: "Claude", percent: 100 }];
   var qContainer = card.querySelector(".quota-container");
   if (!qContainer) {
     qContainer = document.createElement("div");
@@ -1178,10 +1205,7 @@ function createCardElement(acc, idx, quotas, state, hideEmail) {
   var q = (email && quotas[email.toLowerCase()]) || {};
   var fams = (Array.isArray(q.families) && q.families.length)
     ? q.families.slice()
-    : [{ key: "gemini", label: "Gemini", percent: 100 }, { key: "claude", label: "Claude", percent: 100 }, { key: "argon", label: "Gemini 4 Argon", percent: 100 }];
-  if (!fams.some(function(f) { return f && f.key === "argon"; })) {
-    fams.push({ key: "argon", label: "Gemini 4 Argon", percent: 100 });
-  }
+    : [{ key: "gemini", label: "Gemini", percent: 100 }, { key: "claude", label: "Claude", percent: 100 }];
 
   var qHtml = '<div class="quota-container" style="display:flex;flex-direction:column;gap:3px;">' + fams.map(function(f, fi) {
     if (!f) return "";
@@ -1353,8 +1377,7 @@ function renderStatsWidget() {
   if (!container) return;
   var s = (state && state.stats) || {};
   var t = s.today || { totalTokens: 0, inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, thinkingTokens: 0, contentTokens: 0, cacheMissTokens: 0 };
-  var br = s.burnRate || { tokensPerMin: 0, recentTurns: 0 };
-  var fp = (t.totalTokens || 0) + ":" + (t.inputTokens || 0) + ":" + (t.outputTokens || 0) + ":" + (t.cacheHitTokens || 0) + ":" + (t.thinkingTokens || 0) + ":" + (t.cacheMissTokens || 0) + ":" + br.tokensPerMin + ":" + br.recentTurns;
+  var fp = (t.totalTokens || 0) + ":" + (t.inputTokens || 0) + ":" + (t.outputTokens || 0) + ":" + (t.cacheHitTokens || 0) + ":" + (t.thinkingTokens || 0) + ":" + (t.cacheMissTokens || 0);
   if (fp === lastStatsWidgetFp) return;
   lastStatsWidgetFp = fp;
 
@@ -1377,7 +1400,7 @@ function renderStatsWidget() {
     '<div class="card-head">' +
       '<div style="display:flex;align-items:center;gap:4px;overflow:hidden;flex:1;min-width:0;">' +
         '<span class="tier-tag">STATS</span>' +
-        '<span style="font-size:0.95em;font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">Today: ' + fmtNum(t.totalTokens || 0) + ' <span style="font-size:0.85em;font-weight:700;color:var(--cached);" title="' + esc(cacHover) + '">(' + pCac + '%)</span></span>' +
+        '<span style="font-size:0.95em;font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">Today: ' + fmtNum(t.totalTokens || 0) + ' <span style="font-size:0.85em;font-weight:600;color:var(--cached);" title="' + esc(cacHover) + '">(' + pCac + '%)</span></span>' +
       '</div>' +
       '<button class="btn btn-sec" data-action="nav" data-view="stats" style="font-size:0.85em;padding:2px 6px;flex-shrink:0;">Stats &rarr;</button>' +
     '</div>' +
@@ -1390,9 +1413,6 @@ function renderStatsWidget() {
     '<div class="card-breakdown" style="' + ((t.thinkingTokens || 0) > 0 ? 'grid-template-columns:repeat(4,1fr);' : 'grid-template-columns:repeat(3,1fr);') + '">' +
       breakdownHtml +
     '</div>' +
-    (s.burnRate && s.burnRate.tokensPerMin > 0
-      ? ('<div class="card-meta" style="margin-top:3px;font-size:0.75em;color:var(--dim);border-top:1px solid var(--border);padding-top:3px;">Burn Rate: <strong style="color:var(--text);">~' + fmtNum(s.burnRate.tokensPerMin) + '/min</strong> (' + s.burnRate.recentTurns + ' turns in 15m)</div>')
-      : '') +
   '</div>';
 }
 
@@ -1475,8 +1495,8 @@ function renderStatsPage(force) {
     var thkRect = hThk > 0 ? '<rect x="' + x + '" y="' + yThk + '" width="' + barWidth + '" height="' + hThk + '" fill="#f59e0b"><title>' + label + ' Thinking: ' + fmtNum(d.thinkingTokens) + '</title></rect>' : '';
     var outRect = hOut > 0 ? '<rect x="' + x + '" y="' + yOut + '" width="' + barWidth + '" height="' + hOut + '" fill="#10b981" rx="1"><title>' + label + ' Content: ' + fmtNum((d.contentTokens || d.outputTokens) - (d.thinkingTokens || 0)) + '</title></rect>' : '';
     var selBorder = isSelected ? '<rect x="' + (x - 2) + '" y="' + (yBase - h - 2) + '" width="' + (barWidth + 4) + '" height="' + (h + 4) + '" fill="none" stroke="var(--accent)" stroke-width="1.5" rx="3" />' : '';
-    var topText = total > 0 ? '<text x="' + (x + barWidth / 2) + '" y="' + textY + '" text-anchor="middle" font-size="8" font-weight="' + (isSelected ? '700' : '600') + '" fill="' + (isSelected ? '#60a5fa' : '#f8fafc') + '" font-family="var(--mono)">' + fmtNum(total) + '</text>' : '';
-    var dateText = '<text x="' + (x + barWidth / 2) + '" y="132" text-anchor="middle" font-size="8" fill="' + (isSelected ? '#fff' : '#94a3b8') + '" font-weight="' + (isSelected ? '700' : '400') + '" font-family="var(--mono)">' + label + '</text>';
+    var topText = total > 0 ? '<text x="' + (x + barWidth / 2) + '" y="' + textY + '" text-anchor="middle" font-size="9" font-weight="' + (isSelected ? '600' : '500') + '" fill="' + (isSelected ? '#60a5fa' : '#f8fafc') + '">' + fmtNum(total) + '</text>' : '';
+    var dateText = '<text x="' + (x + barWidth / 2) + '" y="132" text-anchor="middle" font-size="9" fill="' + (isSelected ? '#fff' : '#94a3b8') + '" font-weight="' + (isSelected ? '600' : '400') + '">' + label + '</text>';
 
     return '<g class="bar-group ' + (isDimmed ? 'dimmed' : '') + '" data-action="selectBar" data-index="' + i + '" data-label="' + esc(label) + '">' + selBorder + cacRect + inpRect + thkRect + outRect + topText + dateText + '</g>';
   }).join("");
@@ -1538,7 +1558,6 @@ function renderStatsPage(force) {
       thkMetricHtml;
   }
 
-  // Filter Requests
   var allReqs = (s && Array.isArray(s.requests)) ? s.requests.filter(Boolean) : [];
   var reqs = [];
 
@@ -1615,10 +1634,10 @@ function renderStatsPage(force) {
         '</div>' +
         '<div class="card-title" title="' + esc(r.promptPreview || "") + '">' + esc(r.promptPreview || "User Prompt") + '</div>' +
         '<div style="display:flex;align-items:baseline;justify-content:space-between;margin:1px 0;">' +
-          '<span style="font-size:0.7em;color:var(--dim);text-transform:uppercase;font-weight:600;">Tokens</span>' +
-          '<span style="font-size:1.25em;font-weight:700;color:var(--text);font-variant-numeric:tabular-nums;">' + fmtNum(r.totalTokens || 0) + ' <span style="font-size:0.75em;font-weight:700;color:var(--cached);" title="' + esc(rCacHover) + '">(' + hitRate + '%)</span></span>' +
+          '<span style="font-size:0.75em;color:var(--dim);text-transform:uppercase;font-weight:500;">Tokens</span>' +
+          '<span style="font-size:1.1em;font-weight:600;color:var(--text);font-variant-numeric:tabular-nums;">' + fmtNum(r.totalTokens || 0) + ' <span style="font-size:0.78em;font-weight:600;color:var(--cached);" title="' + esc(rCacHover) + '">(' + hitRate + '%)</span></span>' +
         '</div>' +
-        '<div class="card-meta">' + tCount + (tCount === 1 ? " turn" : " turns") + ' &bull; ' + dateStr + (timeStr ? ' ' + timeStr : '') + '</div>' +
+        '<div class="card-meta"><span>' + tCount + (tCount === 1 ? " turn" : " turns") + '</span><span>' + dateStr + (timeStr ? ' ' + timeStr : '') + '</span></div>' +
         '<div class="card-breakdown" style="' + cbColumns + '">' +
           '<div class="cb-item" title="' + esc(rCacHover) + '"><span class="cb-lbl">In</span><span class="cb-val" style="color:var(--input-col);">' + fmtNum(r.inputTokens || 0) + '</span></div>' +
           '<div class="cb-item"><span class="cb-lbl">Out</span><span class="cb-val" style="color:var(--output-col);">' + fmtNum(outVal > 0 ? outVal : r.outputTokens || 0) + '</span></div>' +
@@ -1629,7 +1648,6 @@ function renderStatsPage(force) {
     if (prevReqScroll > 0) reqBreakdownEl.scrollLeft = prevReqScroll;
   }
 
-  // Render Filtered Models
   var models = {};
   var sourceData = activeSlice ? [activeSlice] : data;
   for (var i = 0; i < sourceData.length; i++) {
@@ -1691,8 +1709,8 @@ function renderStatsPage(force) {
         '</div>' +
         '<div class="card-title" title="' + esc(m) + '">' + esc(m) + '</div>' +
         '<div style="display:flex;align-items:baseline;justify-content:space-between;margin:1px 0;">' +
-          '<span style="font-size:0.7em;color:var(--dim);text-transform:uppercase;font-weight:600;">Volume</span>' +
-          '<span style="font-size:1.25em;font-weight:700;color:var(--text);font-variant-numeric:tabular-nums;">' + fmtNum(b.total) + ' <span style="font-size:0.75em;font-weight:700;color:var(--cached);" title="' + esc(mCacHover) + '">(' + mHitRate + '%)</span></span>' +
+          '<span style="font-size:0.75em;color:var(--dim);text-transform:uppercase;font-weight:500;">Volume</span>' +
+          '<span style="font-size:1.1em;font-weight:600;color:var(--text);font-variant-numeric:tabular-nums;">' + fmtNum(b.total) + ' <span style="font-size:0.78em;font-weight:600;color:var(--cached);" title="' + esc(mCacHover) + '">(' + mHitRate + '%)</span></span>' +
         '</div>' +
         '<div class="card-breakdown" style="margin-top:2px;' + mCbCols + '">' +
           '<div class="cb-item" title="' + esc(mCacHover) + '"><span class="cb-lbl">In</span><span class="cb-val" style="color:var(--input-col);">' + fmtNum(b.inp) + '</span></div>' +
@@ -1704,7 +1722,6 @@ function renderStatsPage(force) {
     if (prevModelScroll > 0) modelBreakdownEl.scrollLeft = prevModelScroll;
   }
 
-  // Render Filtered Sessions (Conversations)
   var allConvs = (s && Array.isArray(s.conversations)) ? s.conversations.filter(Boolean) : [];
   var convs = allConvs.filter(function(c) { return c && (c.lastActive || 0) >= cutoffMs; });
 
@@ -1756,10 +1773,10 @@ function renderStatsPage(force) {
         '</div>' +
         '<div class="card-title" title="' + esc(c.title || "") + '">' + esc(c.title || (c.id ? c.id.slice(0,8) : "Session")) + '</div>' +
         '<div style="display:flex;align-items:baseline;justify-content:space-between;margin:1px 0;">' +
-          '<span style="font-size:0.7em;color:var(--dim);text-transform:uppercase;font-weight:600;">Tokens</span>' +
-          '<span style="font-size:1.25em;font-weight:700;color:var(--text);font-variant-numeric:tabular-nums;">' + fmtNum(c.totalTokens || 0) + ' <span style="font-size:0.75em;font-weight:700;color:var(--cached);" title="' + esc(cCacHover) + '">(' + cHitRate + '%)</span></span>' +
+          '<span style="font-size:0.75em;color:var(--dim);text-transform:uppercase;font-weight:500;">Tokens</span>' +
+          '<span style="font-size:1.1em;font-weight:600;color:var(--text);font-variant-numeric:tabular-nums;">' + fmtNum(c.totalTokens || 0) + ' <span style="font-size:0.78em;font-weight:600;color:var(--cached);" title="' + esc(cCacHover) + '">(' + cHitRate + '%)</span></span>' +
         '</div>' +
-        '<div class="card-meta">' + cTurns + (cTurns === 1 ? " turn" : " turns") + ' &bull; ' + cDateStr + (cTimeStr ? ' ' + cTimeStr : '') + '</div>' +
+        '<div class="card-meta"><span>' + cTurns + (cTurns === 1 ? " turn" : " turns") + '</span><span>' + cDateStr + (cTimeStr ? ' ' + cTimeStr : '') + '</span></div>' +
         '<div class="card-breakdown" style="' + cCbCols + '">' +
           '<div class="cb-item" title="' + esc(cCacHover) + '"><span class="cb-lbl">In</span><span class="cb-val" style="color:var(--input-col);">' + fmtNum(c.inputTokens || 0) + '</span></div>' +
           '<div class="cb-item"><span class="cb-lbl">Out</span><span class="cb-val" style="color:var(--output-col);">' + fmtNum(cOutVal > 0 ? cOutVal : c.outputTokens || 0) + '</span></div>' +
@@ -1803,7 +1820,7 @@ function formatLogCardHtml(l) {
     '<div class="log-meta">' +
       '<div style="display:flex;align-items:center;gap:4px;">' +
         '<span class="tier-tag">' + cat + '</span>' +
-        '<span style="font-family:var(--mono);">' + (l.timestamp ? new Date(l.timestamp).toLocaleTimeString() : "") + '</span>' +
+        '<span>' + (l.timestamp ? new Date(l.timestamp).toLocaleTimeString() : "") + '</span>' +
       '</div>' +
       disTag +
     '</div>' +

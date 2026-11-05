@@ -135,7 +135,7 @@ describe("F8: StatusBar HUD Craft", () => {
       expect(item.text).toContain("sync~spin");
     });
 
-    it("T2.3: context usage adds formatted token count to status bar text", async () => {
+    it("T2.3: context usage is omitted from status bar text and retained in tooltip", async () => {
       const { tokenManager, context } = await setupTestTokenManager({
         accounts: [accA],
         activeEmail: accA.email,
@@ -152,7 +152,9 @@ describe("F8: StatusBar HUD Craft", () => {
       (statusBar as any).render();
 
       const item = (statusBar as any).item;
-      expect(item.text).toContain("500k/1M");
+      expect(item.text).not.toContain("500k/1M");
+      const tooltip = (item.tooltip as any).value || "";
+      expect(tooltip).toContain("500,000 / 1,000,000");
     });
 
     it("T2.4: tooltip markdown includes dual-window breakdown (5h and 7d)", async () => {
@@ -198,7 +200,7 @@ describe("F8: StatusBar HUD Craft", () => {
       statusBar = new StatusBarHUD(context as any, undefined, tokenManager);
       const quota = createAccountQuota(accA.email, [
         createFamilyQuota("gemini", 60, 60, "2026-10-29T10:00:00Z", 90, "2026-11-05T10:00:00Z"),
-        createFamilyQuota("argon", 100, 100, undefined, 100, undefined),
+        createFamilyQuota("claude", 100, 100, undefined, 100, undefined),
       ]);
 
       statusBar.updateAccount(accA.email, "pro", true, quota);
@@ -215,10 +217,13 @@ describe("F8: StatusBar HUD Craft", () => {
       expect(text).not.toContain("(7d)");
       expect(text).not.toContain("[Binding]");
       expect(tooltip).not.toContain("[Binding]");
-      expect(text).toContain("Gemini: 60%");
+      expect(text).toContain("60% | 100%");
+      expect(text).not.toContain("Gemini:");
+      expect(tooltip).not.toContain("**Status**:");
+      expect(tooltip).not.toContain("**Burn Rate**:");
     });
 
-    it("T2.7: status bar supports minimal active model quota display", async () => {
+    it("T2.7: status bar displays 5h quota without active model name", async () => {
       const { tokenManager, context } = await setupTestTokenManager({
         accounts: [accA],
         activeEmail: accA.email,
@@ -226,15 +231,16 @@ describe("F8: StatusBar HUD Craft", () => {
 
       statusBar = new StatusBarHUD(context as any, undefined, tokenManager);
       const quota = createAccountQuota(accA.email, [
-        createFamilyQuota("argon", 75, 75, "2026-10-29T10:00:00Z", 95, "2026-11-05T10:00:00Z"),
+        createFamilyQuota("claude", 75, 75, "2026-10-29T10:00:00Z", 95, "2026-11-05T10:00:00Z"),
       ]);
 
       statusBar.updateAccount(accA.email, "pro", true, quota);
-      statusBar.updateContext({ current: 0, limit: 1000, model: "gemini-4-argon", percent: 0 });
+      statusBar.updateContext({ current: 0, limit: 1000, model: "claude-3-5-sonnet", percent: 0 });
       (statusBar as any).render();
 
       const item = (statusBar as any).item;
-      expect(item.text).toContain("Argon: 75%");
+      expect(item.text).toContain("75%");
+      expect(item.text).not.toContain("Claude:");
       expect(item.text).not.toContain("(5h)");
       expect(item.text).not.toContain("[Binding]");
     });

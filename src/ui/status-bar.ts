@@ -1,9 +1,6 @@
 import * as vscode from "vscode";
 import type { AccountQuota, AccountTier, ContextUsage } from "../types.js";
 
-const fmtTokens = (n: number): string =>
-  n >= 1e6 ? `${(n / 1e6).toFixed(1).replace(/\.0$/, "")}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1).replace(/\.0$/, "")}k` : `${n}`;
-
 const makeBar = (p: number): string => {
   const f = Math.max(0, Math.min(10, Math.round(p / 10)));
   return "■".repeat(f) + "□".repeat(10 - f);
@@ -24,22 +21,6 @@ const fmtTime = (s?: string): string => {
 
 import type { StatsManager } from "../core/stats-manager.js";
 import type { TokenManager } from "../core/token-manager.js";
-import type { FamilyQuota } from "../types.js";
-
-function getBindingConstraint(fam: FamilyQuota): { percent: number; windowLabel: "5h" | "7d"; resetTime?: string } {
-  const p5h = fam.limit5h?.percent ?? fam.percent ?? 100;
-  const pWk = fam.limitWeekly?.percent;
-  if (pWk === undefined) {
-    return { percent: p5h, windowLabel: "5h", resetTime: fam.limit5h?.resetTime ?? fam.resetTime };
-  }
-  if (pWk <= 0) {
-    return { percent: 0, windowLabel: "7d", resetTime: fam.limitWeekly?.resetTime };
-  }
-  if (pWk < p5h) {
-    return { percent: pWk, windowLabel: "7d", resetTime: fam.limitWeekly?.resetTime };
-  }
-  return { percent: p5h, windowLabel: "5h", resetTime: fam.limit5h?.resetTime ?? fam.resetTime };
-}
 
 export class StatusBarHUD {
   private readonly item: vscode.StatusBarItem;
@@ -55,7 +36,7 @@ export class StatusBarHUD {
 
   constructor(
     context: vscode.ExtensionContext,
-    private readonly statsManager?: StatsManager,
+    _statsManager?: StatsManager,
     private readonly tokenManager?: TokenManager,
   ) {
     this.item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
@@ -154,37 +135,12 @@ export class StatusBarHUD {
     const tierBadge = this.currentTier && this.currentTier !== "unknown" ? this.currentTier.toUpperCase() : "PRO";
     const families = this.currentQuota?.families || [];
 
-    const activeModel = (this.currentContext?.model || "").toLowerCase();
-    const activeFam =
-      activeModel.includes("argon")
-        ? "argon"
-        : activeModel.includes("claude") ||
-          activeModel.includes("sonnet") ||
-          activeModel.includes("opus") ||
-          activeModel.includes("haiku") ||
-          activeModel.includes("gpt") ||
-          activeModel.includes("oss")
-          ? "claude"
-          : activeModel.includes("gemini")
-            ? "gemini"
-            : null;
-    const targetFamily = activeFam
-      ? families.find((f) => f.key === activeFam)
-      : families.find((f) => f.key === "gemini") || families[0] || null;
-
-    const effectivePct = targetFamily
-      ? getBindingConstraint(targetFamily).percent
-      : families.length > 0
-        ? Math.min(...families.map((f) => getBindingConstraint(f).percent))
-        : 100;
-
-    const activeLabel = targetFamily
-      ? (targetFamily.key === "claude" ? "Claude" : targetFamily.key === "argon" ? "Argon" : "Gemini")
-      : "Gemini";
-    const quotaSummary = `${activeLabel}: ${effectivePct}%`;
+    const quotaSummary = families.map((f) => `${f.limit5h?.percent ?? f.percent}%`).join(" | ");
+    const min5hPct = families.length > 0
+      ? Math.min(...families.map((f) => f.limit5h?.percent ?? f.percent))
+      : 100;
 
     const ctxPct = this.currentContext?.percent ?? 0;
-    const ctxStr = this.currentContext?.limit ? ` [${fmtTokens(this.currentContext.current)}/${fmtTokens(this.currentContext.limit)}]` : "";
 
     const rl = this.rateLimitedAccounts.get(this.currentEmail.toLowerCase());
     const isRateLimited = !!rl && rl.resetTs > Date.now();
@@ -194,19 +150,17 @@ export class StatusBarHUD {
     const cooldownExpiresAt = (this.currentQuota as unknown as { cooldownExpiresAt?: number })?.cooldownExpiresAt;
     const isCooldownActive = !!cooldownExpiresAt && cooldownExpiresAt > Date.now();
     const inCooldown = isRateLimited || isCooldownActive;
-    const activeCooldownReset = isRateLimited ? rl?.resetTs : cooldownExpiresAt;
 
     if (inCooldown) {
-      const cooldownStr = activeCooldownReset ? fmtTime(new Date(activeCooldownReset).toISOString()) : "cooldown";
-      const statusTag = isRateLimited ? ` [429 RATE-LIMITED: ${cooldownStr}]` : ` [COOLDOWN: ${cooldownStr}]`;
-      this.item.text = `${this.isRotating ? "$(sync~spin)" : "$(clock)"} ${tierBadge}${statusTag} ${quotaSummary}${ctxStr}`;
+      const icon = this.isRotating ? "$(sync~spin)" : "$(clock)";
+      this.item.text = `${icon} ${tierBadge}${quotaSummary ? ` ${quotaSummary}` : ""}`;
       this.item.backgroundColor = new vscode.ThemeColor("statusBarItem.errorBackground");
     } else {
       const icon = this.isRotating ? "$(sync~spin)" : "$(sparkle)";
-      this.item.text = `${icon} ${tierBadge} ${quotaSummary}${ctxStr}`;
+      this.item.text = `${icon} ${tierBadge}${quotaSummary ? ` ${quotaSummary}` : ""}`;
 
-      const isError = effectivePct < 20 || ctxPct >= 90;
-      const isWarning = effectivePct < 40 || ctxPct >= 80;
+      const isError = min5hPct < 20 || ctxPct >= 90;
+      const isWarning = min5hPct < 40 || ctxPct >= 80;
 
       this.item.backgroundColor = isError
         ? new vscode.ThemeColor("statusBarItem.errorBackground")
@@ -219,17 +173,6 @@ export class StatusBarHUD {
     const md = new vscode.MarkdownString(`$(account) **Active Account**: \`${displayAccount}\` [${tierBadge}]\n\n`, true);
     md.isTrusted = true;
     md.supportThemeIcons = true;
-
-    if (inCooldown && activeCooldownReset) {
-      const resetClock = fmtTime(new Date(activeCooldownReset).toISOString());
-      md.appendMarkdown(`$(warning) **Status**: \`Rate-Limited (429)\` — Cooldown active (resets ${resetClock})\n\n`);
-    } else if (effectivePct < 20) {
-      md.appendMarkdown(`$(error) **Status**: \`Low Quota Alert\` (${effectivePct}% remaining)\n\n`);
-    } else if (effectivePct < 40) {
-      md.appendMarkdown(`$(warning) **Status**: \`Quota Warning\` (${effectivePct}% remaining)\n\n`);
-    } else {
-      md.appendMarkdown(`$(check) **Status**: \`Healthy\`\n\n`);
-    }
 
     if (families.length > 0) {
       md.appendMarkdown("---\n\n");
@@ -247,15 +190,8 @@ export class StatusBarHUD {
       }
     }
     if (this.currentContext?.limit) {
-      const modelLabel = this.currentContext.model ? ` (${this.currentContext.model})` : "";
       const ctxWarn = ctxPct >= 90 ? " **[CRITICAL]**" : ctxPct >= 80 ? " **[HIGH CONTEXT]**" : "";
-      md.appendMarkdown(`---\n\n$(server-process) **Context**${modelLabel}: ${this.currentContext.current.toLocaleString()} / ${this.currentContext.limit.toLocaleString()} (${ctxPct}%)${ctxWarn}\n\n`);
-    }
-    if (this.statsManager) {
-      const burn = this.statsManager.getBurnRate(15);
-      if (burn.tokensPerMin > 0) {
-        md.appendMarkdown(`---\n\n$(dashboard) **Burn Rate**: \`~${fmtTokens(burn.tokensPerMin)} tok/min\` (${burn.recentTurns} turns in last 15m)\n\n`);
-      }
+      md.appendMarkdown(`---\n\n$(server-process) **Context**: ${this.currentContext.current.toLocaleString()} / ${this.currentContext.limit.toLocaleString()} (${ctxPct}%)${ctxWarn}\n\n`);
     }
     md.appendMarkdown("---\n*Click to open OpenAG panel*");
     this.item.tooltip = md;

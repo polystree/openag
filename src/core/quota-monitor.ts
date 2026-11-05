@@ -292,7 +292,7 @@ export class QuotaMonitor {
           await this.tokenManager.restoreAccountStatus(email);
           this.onQuotaUpdate?.(quota);
 
-          if (this.tokenManager.isExtensionEnabled() && this.tokenManager.isRotationEnabled()) {
+          if (this.tokenManager.isExtensionEnabled()) {
             const model = this.usageTracker?.getActiveModel();
             void this.tokenManager.autoSelectHighestQuota(this.getAllQuotas(), `rehabilitation on ${email}`, model);
           }
@@ -411,18 +411,29 @@ export class QuotaMonitor {
           : [];
 
       if (groups.length > 0) {
-        let gemini5h: QuotaLimitInfo | undefined, geminiWeekly: QuotaLimitInfo | undefined;
-        let claude5h: QuotaLimitInfo | undefined, claudeWeekly: QuotaLimitInfo | undefined;
-        let argon5h: QuotaLimitInfo | undefined, argonWeekly: QuotaLimitInfo | undefined;
+        const familyMap = new Map<string, {
+          key: string;
+          label: string;
+          limit5h?: QuotaLimitInfo;
+          limitWeekly?: QuotaLimitInfo;
+        }>();
 
         for (const grp of groups) {
-          const groupName = grp.displayName || "";
-          const buckets = grp.buckets || [];
+          const rawName = grp.displayName || "";
+          const cleanLabel = rawName.replace(/\s*models\b/gi, "").trim() || rawName.trim() || "Model";
+          const famKey = this.categorizeFamily(cleanLabel, rawName);
+          const groupKey = famKey !== "other" ? famKey : cleanLabel.toLowerCase().replace(/[^a-z0-9]/g, "-");
 
+          let famEntry = familyMap.get(groupKey);
+          if (!famEntry) {
+            famEntry = { key: groupKey, label: cleanLabel };
+            familyMap.set(groupKey, famEntry);
+          }
+
+          const buckets = grp.buckets || [];
           for (const b of buckets) {
             const bId = (b.bucketId || "").toLowerCase();
             const bName = (b.displayName || "").toLowerCase();
-            const fam = this.categorizeFamily(groupName, `${bId} ${bName}`);
             const frac = extractRemainingFraction(b);
             const pct = Math.max(0, Math.min(100, Math.round(frac * 100)));
             const resetTime = extractResetTime(b, pct);
@@ -442,50 +453,33 @@ export class QuotaMonitor {
               bName.includes("week");
 
             const limitInfo: QuotaLimitInfo = { percent: pct, resetTime };
-
-            if (fam === "argon") {
-              if (is5h) argon5h = limitInfo;
-              else if (isWk) argonWeekly = limitInfo;
-            } else if (fam === "claude") {
-              if (is5h) claude5h = limitInfo;
-              else if (isWk) claudeWeekly = limitInfo;
-            } else {
-              if (is5h) gemini5h = limitInfo;
-              else if (isWk) geminiWeekly = limitInfo;
+            if (is5h) {
+              famEntry.limit5h = limitInfo;
+            } else if (isWk) {
+              famEntry.limitWeekly = limitInfo;
             }
           }
         }
 
-        const geminiPct = Math.min(gemini5h?.percent ?? 100, geminiWeekly?.percent ?? 100);
-        const claudePct = Math.min(claude5h?.percent ?? 100, claudeWeekly?.percent ?? 100);
-        const argonPct = Math.min(argon5h?.percent ?? 100, argonWeekly?.percent ?? 100);
+        families = Array.from(familyMap.values()).map((entry) => {
+          const p5h = entry.limit5h?.percent ?? 100;
+          const pWk = entry.limitWeekly?.percent ?? 100;
+          const minPct = Math.min(p5h, pWk);
+          const resetTime = (entry.limit5h && entry.limit5h.percent < 100)
+            ? entry.limit5h.resetTime
+            : (entry.limitWeekly && entry.limitWeekly.percent < 100)
+              ? entry.limitWeekly.resetTime
+              : undefined;
 
-        families = [
-          {
-            key: "gemini",
-            label: "Gemini",
-            percent: geminiPct,
-            resetTime: (gemini5h && gemini5h.percent < 100) ? gemini5h.resetTime : (geminiWeekly && geminiWeekly.percent < 100) ? geminiWeekly.resetTime : undefined,
-            limit5h: gemini5h,
-            limitWeekly: geminiWeekly,
-          },
-          {
-            key: "claude",
-            label: "Claude",
-            percent: claudePct,
-            resetTime: (claude5h && claude5h.percent < 100) ? claude5h.resetTime : (claudeWeekly && claudeWeekly.percent < 100) ? claudeWeekly.resetTime : undefined,
-            limit5h: claude5h,
-            limitWeekly: claudeWeekly,
-          },
-          {
-            key: "argon",
-            label: "Gemini 4 Argon",
-            percent: argonPct,
-            resetTime: (argon5h && argon5h.percent < 100) ? argon5h.resetTime : (argonWeekly && argonWeekly.percent < 100) ? argonWeekly.resetTime : undefined,
-            limit5h: argon5h,
-            limitWeekly: argonWeekly,
-          },
-        ];
+          return {
+            key: entry.key,
+            label: entry.label,
+            percent: minPct,
+            resetTime,
+            limit5h: entry.limit5h,
+            limitWeekly: entry.limitWeekly,
+          };
+        });
       } else if (data.models && Object.keys(data.models).length > 0) {
         for (const [name, info] of Object.entries(data.models)) {
           const frac = info.quotaInfo ? extractRemainingFraction(info.quotaInfo as unknown as QuotaBucket) : 1;
@@ -498,7 +492,6 @@ export class QuotaMonitor {
         families = [
           { key: "gemini", label: "Gemini", percent: 100 },
           { key: "claude", label: "Claude", percent: 100 },
-          { key: "argon", label: "Gemini 4 Argon", percent: 100 },
         ];
       }
 
@@ -517,7 +510,7 @@ export class QuotaMonitor {
   }
 
   private extractFamilyQuotas(models: ModelQuota[]): FamilyQuota[] {
-    const map = new Map<"gemini" | "claude" | "argon", { minPct: number; earliestReset?: string }>();
+    const map = new Map<"gemini" | "claude", { minPct: number; earliestReset?: string }>();
     for (const m of models) {
       if (m.family === "other") continue;
       const cur = map.get(m.family);
@@ -532,7 +525,7 @@ export class QuotaMonitor {
     for (const [key, val] of map.entries()) {
       result.push({
         key,
-        label: key === "gemini" ? "Gemini" : key === "claude" ? "Claude" : "Gemini 4 Argon",
+        label: key === "gemini" ? "Gemini" : "Claude",
         percent: val.minPct,
         resetTime: val.earliestReset,
         limit5h: { percent: val.minPct, resetTime: val.earliestReset },
@@ -540,7 +533,6 @@ export class QuotaMonitor {
     }
     if (!result.some((f) => f.key === "gemini")) result.push({ key: "gemini", label: "Gemini", percent: 100 });
     if (!result.some((f) => f.key === "claude")) result.push({ key: "claude", label: "Claude", percent: 100 });
-    if (!result.some((f) => f.key === "argon")) result.push({ key: "argon", label: "Gemini 4 Argon", percent: 100 });
     return result;
   }
 
@@ -632,9 +624,9 @@ export class QuotaMonitor {
   }
 
   private checkAutoRotation(email: string): void {
-    if (!this.tokenManager.isExtensionEnabled() || !this.tokenManager.isRotationEnabled()) return;
+    if (!this.tokenManager.isExtensionEnabled()) return;
     const model = this.usageTracker?.getActiveModel();
-    void this.tokenManager.autoSelectHighestQuota(this.getAllQuotas(), `quota update on ${email}`, model);
+    void this.tokenManager.autoSelectHighestQuota(this.getAllQuotas(), `quota update on ${email}`, model, { ignoreThrottle: true });
   }
 
   public async pollActiveAccount(): Promise<void> {
@@ -652,22 +644,21 @@ export class QuotaMonitor {
     }
     const run = async () => {
       try {
-        const accounts = this.tokenManager.getAccounts().filter((acc) => acc.status !== "disabled");
+        const accounts = this.tokenManager
+          .getAccounts()
+          .filter((acc) => acc.status !== "disabled" && acc.health !== "expired" && acc.health !== "tos_required");
         accounts.sort((a, b) => {
           const aPriority = this.priorityQueue.has(a.email.toLowerCase()) ? 1 : 0;
           const bPriority = this.priorityQueue.has(b.email.toLowerCase()) ? 1 : 0;
           return bPriority - aPriority;
         });
-        const concurrency = Math.min(4, Math.max(2, Math.floor(accounts.length / 3)));
+        const concurrency = Math.min(4, Math.max(2, Math.ceil(accounts.length / 2)));
         await runWithConcurrency(accounts, concurrency, async (acc) => {
           await this.fetchAccountQuota(acc, true);
-          if (accounts.length > 6) {
-            await new Promise((r) => setTimeout(r, 100));
-          }
         });
-        if (this.tokenManager.isExtensionEnabled() && this.tokenManager.isRotationEnabled()) {
+        if (this.tokenManager.isExtensionEnabled()) {
           const model = this.usageTracker?.getActiveModel();
-          void this.tokenManager.autoSelectHighestQuota(this.getAllQuotas(), "poll all accounts completion", model);
+          void this.tokenManager.autoSelectHighestQuota(this.getAllQuotas(), "poll all accounts completion", model, { ignoreThrottle: true });
         }
       } finally {
         this.currentPollPromise = null;
@@ -677,9 +668,8 @@ export class QuotaMonitor {
     await this.currentPollPromise;
   }
 
-  private categorizeFamily(name: string, bucketId = ""): "gemini" | "claude" | "argon" | "other" {
+  private categorizeFamily(name: string, bucketId = ""): "gemini" | "claude" | "other" {
     const lower = `${name} ${bucketId}`.toLowerCase();
-    if (lower.includes("argon")) return "argon";
     if (
       lower.includes("claude") ||
       lower.includes("sonnet") ||

@@ -67,17 +67,6 @@
           "default": true,
           "description": "Enable or disable OpenAG multi-account rotation."
         },
-        "openag.rotationStrategy": {
-          "type": "string",
-          "enum": [
-            "auto_highest"
-          ],
-          "enumDescriptions": [
-            "Always pick the account with the highest available quota"
-          ],
-          "default": "auto_highest",
-          "description": "Account rotation strategy."
-        },
         "openag.hideEmail": {
           "type": "boolean",
           "default": false,
@@ -93,6 +82,13 @@
           "default": 60,
           "minimum": 15,
           "description": "Active quota polling interval in seconds (backs off to 5 minutes when editor is idle)."
+        },
+        "openag.hysteresisDelta": {
+          "type": "number",
+          "default": 5,
+          "minimum": 0,
+          "maximum": 50,
+          "description": "Minimum quota percentage advantage required to rotate accounts (0 = switch immediately on any higher quota, default 5%)."
         }
       }
     },

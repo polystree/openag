@@ -14,9 +14,26 @@ export interface KeyringTokenPayload {
 }
 
 export class OSKeyring {
+  private static writeLock: Promise<void> = Promise.resolve();
+
   public static async writeCredential(email: string, token: OAuthTokens): Promise<boolean> {
     if (!email || !token.accessToken) return false;
 
+    const prevLock = this.writeLock;
+    let resolveLock!: () => void;
+    this.writeLock = new Promise<void>((r) => {
+      resolveLock = r;
+    });
+
+    try {
+      await prevLock.catch(() => {});
+      return await this.executeWrite(email, token);
+    } finally {
+      resolveLock();
+    }
+  }
+
+  private static async executeWrite(email: string, token: OAuthTokens): Promise<boolean> {
     const expiresIn = Math.max(0, (token.expiryDateSeconds || (Math.floor(Date.now() / 1000) + 3600)) - Math.floor(Date.now() / 1000));
     const expiryIso = new Date((token.expiryDateSeconds || (Math.floor(Date.now() / 1000) + 3600)) * 1000).toISOString();
 

@@ -128,7 +128,7 @@ export async function runHook(): Promise<void> {
       method: "POST",
       headers,
       body: rawInput || "{}",
-      signal: AbortSignal.timeout(45),
+      signal: AbortSignal.timeout(1500),
     });
 
     if (res.ok) {

@@ -58,9 +58,7 @@ function getLogLevel(msg: string): "info" | "warn" | "error" | "rotate" {
   if (lower.includes("warn") || lower.includes("exhausted")) return "warn";
   if (
     msg.includes("[AutoRotate] Switching to") ||
-    msg.includes("Active account switched to") ||
-    msg.includes("[AutoRotate (Round-Robin)]") ||
-    msg.includes("[AutoRotate (Round-Robin Imminent)]")
+    msg.includes("Active account switched to")
   ) {
     return "rotate";
   }
@@ -491,4 +489,6 @@ export function deactivate(): void {
   tokenManager?.dispose();
   quotaMonitor?.dispose();
   statusBar?.dispose();
+  usageTracker?.dispose();
+  statsManager?.dispose();
 }

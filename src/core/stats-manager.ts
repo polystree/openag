@@ -465,85 +465,6 @@ export class StatsManager {
     this.schedulePersist();
   }
 
-  public mergeRegistry(other: TokenStatsRegistry): void {
-    if (!other?.days) return;
-
-    if (Array.isArray(other.requests)) {
-      const existingIds = new Set((this.registry.requests || []).map((r) => r.id));
-      for (const req of other.requests) {
-        if (!req) continue;
-        if (!existingIds.has(req.id)) {
-          this.registry.requests.push(req);
-          existingIds.add(req.id);
-        }
-      }
-      this.pruneRequests();
-    }
-
-    if (other.conversations) {
-      if (!this.registry.conversations) this.registry.conversations = {};
-      for (const [id, oc] of Object.entries(other.conversations)) {
-        if (!oc) continue;
-        const tc = this.registry.conversations[id];
-        if (!tc) {
-          this.registry.conversations[id] = { ...oc };
-        } else if ((oc.lastActive || 0) > (tc.lastActive || 0)) {
-          tc.lastActive = oc.lastActive;
-          tc.turnCount = Math.max(tc.turnCount || 0, oc.turnCount || 0);
-          tc.totalTokens = Math.max(tc.totalTokens || 0, oc.totalTokens || 0);
-          tc.inputTokens = Math.max(tc.inputTokens || 0, oc.inputTokens || 0);
-          tc.outputTokens = Math.max(tc.outputTokens || 0, oc.outputTokens || 0);
-          tc.cacheHitTokens = Math.max(tc.cacheHitTokens || 0, oc.cacheHitTokens || 0);
-          if (oc.title && oc.title !== id.slice(0, 8)) tc.title = oc.title;
-          if (oc.model && oc.model !== "Unknown Model") tc.model = oc.model;
-          if (oc.models) {
-            if (!tc.models) tc.models = {};
-            for (const [m, om] of Object.entries(oc.models)) {
-              if (!om) continue;
-              const tm = tc.models[m];
-              if (!tm) {
-                tc.models[m] = { ...om };
-              } else if (om.totalTokens > tm.totalTokens) {
-                tc.models[m] = { ...om };
-              }
-            }
-          }
-        }
-      }
-    }
-
-    if (other.days) {
-      if (!this.registry.days) this.registry.days = {};
-      for (const [date, od] of Object.entries(other.days)) {
-        if (!od) continue;
-        const td = this.registry.days[date];
-        if (!td) {
-          this.registry.days[date] = { ...od };
-        } else {
-          if (od.totalTokens > td.totalTokens) {
-            td.totalTokens = od.totalTokens;
-            td.inputTokens = od.inputTokens;
-            td.outputTokens = od.outputTokens;
-            td.cacheHitTokens = od.cacheHitTokens;
-            td.cacheMissTokens = od.cacheMissTokens;
-          }
-          if (od.models) {
-            if (!td.models) td.models = {};
-            for (const [m, om] of Object.entries(od.models)) {
-              if (!om) continue;
-              const tm = td.models[m];
-              if (!tm) {
-                td.models[m] = { ...om };
-              } else if (om.totalTokens > tm.totalTokens) {
-                td.models[m] = { ...om };
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-
   public recordTokens(
     dateStr: string,
     rawModelName: string,
@@ -1109,6 +1030,7 @@ export class StatsManager {
     if (this.persistDebounce) {
       clearTimeout(this.persistDebounce);
       this.persistDebounce = null;
+      void this.persist();
     }
     if (this.cleanupTimer) {
       clearInterval(this.cleanupTimer);

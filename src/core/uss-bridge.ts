@@ -16,20 +16,10 @@ interface AntigravityUSS {
     clientSecret?: string;
     client_secret?: string;
     getOAuthTokenInfo?: () => Promise<OAuthTokens | null>;
-    setOAuthTokenInfo?: (token: OAuthTokens) => Promise<void>;
   };
   UserStatus?: {
     getUserStatus?: () => Promise<Uint8Array | string | null>;
-    restartUserStatusUpdater?: () => void;
-    updateUserStatus?: () => void;
-    refresh?: () => void;
-    sync?: () => void;
   };
-  sync?: () => void;
-  refresh?: () => void;
-  notifyChange?: () => void;
-  onOAuthTokenChanged?: () => void;
-  restartUserStatusUpdater?: () => void;
 }
 
 interface VSCodeWithUSS {
@@ -110,52 +100,6 @@ export const USSBridge = {
       return ok;
     } catch (e: unknown) {
       debugLog(`[USSBridge] Failed to write OS keyring: ${e instanceof Error ? e.message : String(e)}`);
-      return false;
-    }
-  },
-
-  async setOAuthToken(token: OAuthTokens, email?: string): Promise<boolean> {
-    try {
-      const resolvedEmail = email || (await this.getEmailFromToken(token.accessToken));
-      if (resolvedEmail) {
-        await OSKeyring.writeCredential(resolvedEmail, token);
-      }
-
-      const api = getApi();
-      const pref = api?.OAuthPreferences;
-      if (!pref?.setOAuthTokenInfo) return false;
-      await pref.setOAuthTokenInfo({
-        accessToken: token.accessToken,
-        refreshToken: token.refreshToken || "",
-        expiryDateSeconds: token.expiryDateSeconds || Math.floor(Date.now() / 1000) + 3600,
-        tokenType: token.tokenType || "Bearer",
-        isGcpTos: token.isGcpTos ?? false,
-      });
-
-      if (api) {
-        try { api.sync?.(); } catch (e: unknown) { debugLog(`[USSBridge] api.sync error: ${e instanceof Error ? e.message : String(e)}`); }
-        try { api.refresh?.(); } catch (e: unknown) { debugLog(`[USSBridge] api.refresh error: ${e instanceof Error ? e.message : String(e)}`); }
-        try { api.notifyChange?.(); } catch (e: unknown) { debugLog(`[USSBridge] api.notifyChange error: ${e instanceof Error ? e.message : String(e)}`); }
-        try { api.onOAuthTokenChanged?.(); } catch (e: unknown) { debugLog(`[USSBridge] api.onOAuthTokenChanged error: ${e instanceof Error ? e.message : String(e)}`); }
-
-        const us = api.UserStatus;
-        if (us) {
-          try { us.updateUserStatus?.(); } catch (e: unknown) { debugLog(`[USSBridge] us.updateUserStatus error: ${e instanceof Error ? e.message : String(e)}`); }
-          try { us.refresh?.(); } catch (e: unknown) { debugLog(`[USSBridge] us.refresh error: ${e instanceof Error ? e.message : String(e)}`); }
-          try { us.sync?.(); } catch (e: unknown) { debugLog(`[USSBridge] us.sync error: ${e instanceof Error ? e.message : String(e)}`); }
-        }
-      }
-
-      for (const cmd of [
-        "antigravity.refreshStatus",
-        "antigravity.syncState",
-        "antigravity.getUserStatus",
-      ]) {
-        try { void vscode.commands.executeCommand(cmd); } catch (e: unknown) { debugLog(`[USSBridge] Failed to execute ${cmd}: ${e instanceof Error ? e.message : String(e)}`); }
-      }
-      return true;
-    } catch (e: unknown) {
-      debugLog(`[USSBridge] Failed to set OAuth token: ${e instanceof Error ? e.message : String(e)}`);
       return false;
     }
   },

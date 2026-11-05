@@ -94,6 +94,7 @@ export class LanguageServerClient {
           "Connect-Protocol-Version": "1",
         },
         body: JSON.stringify({}),
+        signal: AbortSignal.timeout(3000),
       });
       if (!res.ok) {
         if (res.status === 401 || res.status === 403) this.invalidate();
@@ -124,6 +125,7 @@ export class LanguageServerClient {
           "Connect-Protocol-Version": "1",
         },
         body: JSON.stringify({}),
+        signal: AbortSignal.timeout(3000),
       });
       if (!res.ok) {
         if (res.status === 401 || res.status === 403) this.invalidate();

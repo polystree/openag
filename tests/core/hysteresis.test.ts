@@ -12,16 +12,16 @@ describe("F1: Anti-Flapping Hysteresis", () => {
   const accB = createTestAccount({ email: "candidate@gmail.com", tier: "pro" });
 
   describe("Tier 1: Core Hysteresis Logic", () => {
-    it("T1.1: retains active account when candidate quota advantage is within hysteresis delta (<= 15%)", async () => {
+    it("T1.1: retains active account when candidate quota advantage is within hysteresis delta (<= 5%)", async () => {
       const { tokenManager } = await setupTestTokenManager({
         accounts: [accA, accB],
         activeEmail: accA.email,
       });
 
-      // Active has 70%, candidate has 80% (delta = 10% <= 15%)
+      // Active has 70%, candidate has 73% (delta = 3% <= 5%)
       const quotas: Record<string, AccountQuota> = {
         [accA.email]: createAccountQuota(accA.email, [createFamilyQuota("gemini", 70)]),
-        [accB.email]: createAccountQuota(accB.email, [createFamilyQuota("gemini", 80)]),
+        [accB.email]: createAccountQuota(accB.email, [createFamilyQuota("gemini", 73)]),
       };
 
       const selected = await tokenManager.autoSelectHighestQuota(quotas, "auto", "gemini-1.5-pro");
@@ -30,13 +30,13 @@ describe("F1: Anti-Flapping Hysteresis", () => {
       expect(tokenManager.getActiveEmail()).toBe(accA.email);
     });
 
-    it("T1.2: switches to candidate when quota advantage strictly exceeds hysteresis delta (> 15%)", async () => {
+    it("T1.2: switches to candidate when quota advantage strictly exceeds hysteresis delta (> 5%)", async () => {
       const { tokenManager } = await setupTestTokenManager({
         accounts: [accA, accB],
         activeEmail: accA.email,
       });
 
-      // Active has 60%, candidate has 85% (delta = 25% > 15%)
+      // Active has 60%, candidate has 85% (delta = 25% > 5%)
       const quotas: Record<string, AccountQuota> = {
         [accA.email]: createAccountQuota(accA.email, [createFamilyQuota("gemini", 60)]),
         [accB.email]: createAccountQuota(accB.email, [createFamilyQuota("gemini", 85)]),
@@ -113,25 +113,25 @@ describe("F1: Anti-Flapping Hysteresis", () => {
   });
 
   describe("Tier 2: Boundary & Corner Cases", () => {
-    it("T2.1: boundary threshold: exactly 15% delta retains active; 15.1% switches", async () => {
+    it("T2.1: boundary threshold: exactly 5% delta retains active; 5.1% switches", async () => {
       const { tokenManager } = await setupTestTokenManager({
         accounts: [accA, accB],
         activeEmail: accA.email,
       });
 
-      // Active has 70%, candidate has 85% (exact delta = 15%)
+      // Active has 70%, candidate has 75% (exact delta = 5%)
       const quotasExact: Record<string, AccountQuota> = {
         [accA.email]: createAccountQuota(accA.email, [createFamilyQuota("gemini", 70)]),
-        [accB.email]: createAccountQuota(accB.email, [createFamilyQuota("gemini", 85)]),
+        [accB.email]: createAccountQuota(accB.email, [createFamilyQuota("gemini", 75)]),
       };
 
       const selectedExact = await tokenManager.autoSelectHighestQuota(quotasExact, "auto", "gemini-1.5-pro");
       expect(selectedExact).toBeNull();
 
-      // Active has 70%, candidate has 85.1% (delta = 15.1% > 15%)
+      // Active has 70%, candidate has 75.1% (delta = 5.1% > 5%)
       const quotasOver: Record<string, AccountQuota> = {
         [accA.email]: createAccountQuota(accA.email, [createFamilyQuota("gemini", 70)]),
-        [accB.email]: createAccountQuota(accB.email, [createFamilyQuota("gemini", 85.1)]),
+        [accB.email]: createAccountQuota(accB.email, [createFamilyQuota("gemini", 75.1)]),
       };
 
       const selectedOver = await tokenManager.autoSelectHighestQuota(quotasOver, "auto", "gemini-1.5-pro");
@@ -155,28 +155,28 @@ describe("F1: Anti-Flapping Hysteresis", () => {
       expect(selected?.email).toBe(accB.email);
     });
 
-    it("T2.3: candidate at 100% vs active at 86% (delta 14% -> retains) vs active at 84% (delta 16% -> switches)", async () => {
+    it("T2.3: candidate at 100% vs active at 96% (delta 4% -> retains) vs active at 94% (delta 6% -> switches)", async () => {
       const { tokenManager } = await setupTestTokenManager({
         accounts: [accA, accB],
         activeEmail: accA.email,
       });
 
-      // Candidate 100% vs Active 86% -> delta 14% -> retain
-      const quotas14: Record<string, AccountQuota> = {
-        [accA.email]: createAccountQuota(accA.email, [createFamilyQuota("gemini", 86)]),
+      // Candidate 100% vs Active 96% -> delta 4% -> retain
+      const quotas4: Record<string, AccountQuota> = {
+        [accA.email]: createAccountQuota(accA.email, [createFamilyQuota("gemini", 96)]),
         [accB.email]: createAccountQuota(accB.email, [createFamilyQuota("gemini", 100)]),
       };
-      const res14 = await tokenManager.autoSelectHighestQuota(quotas14, "auto", "gemini-1.5-pro");
-      expect(res14).toBeNull();
+      const res4 = await tokenManager.autoSelectHighestQuota(quotas4, "auto", "gemini-1.5-pro");
+      expect(res4).toBeNull();
 
-      // Candidate 100% vs Active 84% -> delta 16% -> switch
-      const quotas16: Record<string, AccountQuota> = {
-        [accA.email]: createAccountQuota(accA.email, [createFamilyQuota("gemini", 84)]),
+      // Candidate 100% vs Active 94% -> delta 6% -> switch
+      const quotas6: Record<string, AccountQuota> = {
+        [accA.email]: createAccountQuota(accA.email, [createFamilyQuota("gemini", 94)]),
         [accB.email]: createAccountQuota(accB.email, [createFamilyQuota("gemini", 100)]),
       };
-      const res16 = await tokenManager.autoSelectHighestQuota(quotas16, "auto", "gemini-1.5-pro");
-      expect(res16).not.toBeNull();
-      expect(res16?.email).toBe(accB.email);
+      const res6 = await tokenManager.autoSelectHighestQuota(quotas6, "auto", "gemini-1.5-pro");
+      expect(res6).not.toBeNull();
+      expect(res6?.email).toBe(accB.email);
     });
 
     it("T2.4: equal quotas (50% vs 50%) retains active account", async () => {
@@ -228,7 +228,7 @@ describe("F1: Anti-Flapping Hysteresis", () => {
       expect(selected?.email).toBe(accB.email);
     });
 
-    it("T2.7: custom hysteresisDelta in options overrides default 15% threshold", async () => {
+    it("T2.7: custom hysteresisDelta in options overrides default 5% threshold", async () => {
       const { tokenManager } = await setupTestTokenManager({
         accounts: [accA, accB],
         activeEmail: accA.email,
@@ -240,10 +240,54 @@ describe("F1: Anti-Flapping Hysteresis", () => {
         [accB.email]: createAccountQuota(accB.email, [createFamilyQuota("gemini", 78)]),
       };
 
-      // With custom hysteresisDelta = 5%: delta 8% > 5% -> switches!
-      const selected = await tokenManager.autoSelectHighestQuota(quotas, "auto", "gemini-1.5-pro", {
-        hysteresisDelta: 5,
+      // With custom hysteresisDelta = 10%: delta 8% <= 10% -> retains active!
+      const selectedRetain = await tokenManager.autoSelectHighestQuota(quotas, "auto", "gemini-1.5-pro", {
+        hysteresisDelta: 10,
       });
+      expect(selectedRetain).toBeNull();
+
+      // With custom hysteresisDelta = 2%: delta 8% > 2% -> switches!
+      const selectedSwitch = await tokenManager.autoSelectHighestQuota(quotas, "auto", "gemini-1.5-pro", {
+        hysteresisDelta: 2,
+      });
+      expect(selectedSwitch).not.toBeNull();
+      expect(selectedSwitch?.email).toBe(accB.email);
+    });
+
+    it("T2.8: hysteresisDelta: 0 in config switches immediately on any candidate lead", async () => {
+      const { tokenManager } = await setupTestTokenManager({
+        accounts: [accA, accB],
+        activeEmail: accA.email,
+        config: { hysteresisDelta: 0 },
+      });
+
+      // Active 70%, candidate 70.5% (delta 0.5% > 0%)
+      const quotas: Record<string, AccountQuota> = {
+        [accA.email]: createAccountQuota(accA.email, [createFamilyQuota("gemini", 70)]),
+        [accB.email]: createAccountQuota(accB.email, [createFamilyQuota("gemini", 70.5)]),
+      };
+
+      const selected = await tokenManager.autoSelectHighestQuota(quotas, "auto", "gemini-1.5-pro");
+      expect(selected).not.toBeNull();
+      expect(selected?.email).toBe(accB.email);
+    });
+
+    it("T2.9: superior candidate quota switches instantly even if within recent rotation interval", async () => {
+      const { tokenManager } = await setupTestTokenManager({
+        accounts: [accA, accB],
+        activeEmail: accA.email,
+      });
+
+      // Simulate recent switch just 2 seconds ago
+      (tokenManager as any).lastAccountSwitchTime = Date.now() - 2000;
+
+      // Active 60%, candidate 90% (delta 30% > 5%)
+      const quotas: Record<string, AccountQuota> = {
+        [accA.email]: createAccountQuota(accA.email, [createFamilyQuota("gemini", 60)]),
+        [accB.email]: createAccountQuota(accB.email, [createFamilyQuota("gemini", 90)]),
+      };
+
+      const selected = await tokenManager.autoSelectHighestQuota(quotas, "auto", "gemini-1.5-pro");
       expect(selected).not.toBeNull();
       expect(selected?.email).toBe(accB.email);
     });

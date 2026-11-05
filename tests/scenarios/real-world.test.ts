@@ -36,7 +36,6 @@ describe("Tier 4: Real-World Application Scenarios", () => {
       statusBar.dispose();
       statusBar = null;
     }
-    setMockConfig("openag.rotationStrategy", "auto_highest");
     setMockConfig("openag.hideEmail", false);
   });
 
@@ -70,12 +69,12 @@ describe("Tier 4: Real-World Application Scenarios", () => {
       };
       (statsManager as any).registry.requests.push(req);
 
-      // Candidate Beta stays at 80% quota
-      // During turns 1..7, Alpha quota drops from 97% to 76% (always higher than Beta or within 15% hysteresis)
-      // At turn 10: Alpha is 70%, Beta is 80% -> delta = 10% <= 15% hysteresis -> Retain Alpha!
+      // Candidate Beta stays at 73% quota
+      // During turns 1..9, Alpha quota drops from 97% to 73% (higher than or equal to Beta)
+      // At turn 10: Alpha is 70%, Beta is 73% -> delta = 3% <= 5% hysteresis -> Retain Alpha!
       const quotas: Record<string, AccountQuota> = {
         [accAlpha.email]: createAccountQuota(accAlpha.email, [createFamilyQuota("gemini", quotaAlpha)]),
-        [accBeta.email]: createAccountQuota(accBeta.email, [createFamilyQuota("gemini", 80)]),
+        [accBeta.email]: createAccountQuota(accBeta.email, [createFamilyQuota("gemini", 73)]),
       };
 
       const selected = await tokenManager.autoSelectHighestQuota(quotas, "auto", "gemini-1.5-pro");
