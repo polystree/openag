@@ -2,7 +2,7 @@
   "name": "openag",
   "displayName": "OpenAG",
   "description": "Multi-account pool and quota rotation for Google Antigravity.",
-  "version": "1.4.9",
+  "version": "1.5.0",
   "publisher": "polystree",
   "author": "Polystree",
   "license": "MIT",
